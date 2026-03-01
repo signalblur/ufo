@@ -30,6 +30,7 @@ let package = Package(
             name: "UFOLibTests",
             dependencies: [
                 "UFOLib",
+                "ufo",
                 .product(name: "Testing", package: "swift-testing")
             ],
             swiftSettings: [
