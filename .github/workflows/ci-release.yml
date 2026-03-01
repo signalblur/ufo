@@ -1,0 +1,100 @@
+name: CI and Release
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: CI
+    runs-on: macos-14
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify arm64 runner
+        run: |
+          set -euo pipefail
+          if [[ "$(uname -m)" != "arm64" ]]; then
+            echo "Expected arm64 runner; got $(uname -m)."
+            exit 1
+          fi
+
+      - name: Resolve package dependencies
+        run: swift package resolve
+
+      - name: Build
+        run: swift build
+
+      - name: Run tests
+        run: swift test --parallel
+
+      - name: Enforce coverage gate
+        run: bash Scripts/coverage.sh
+
+      - name: Enforce runtime dependency gate
+        run: bash Scripts/check-runtime-deps.sh
+
+  release:
+    name: Release macOS arm64 tarball
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: ci
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build release binary
+        run: swift build -c release
+
+      - name: Package arm64 tarball
+        id: package
+        run: |
+          set -euo pipefail
+          if [[ "$(uname -m)" != "arm64" ]]; then
+            echo "Expected arm64 runner; got $(uname -m)."
+            exit 1
+          fi
+
+          BIN_DIR="$(swift build -c release --show-bin-path)"
+          TAG="main-${GITHUB_SHA:0:12}"
+          ARCHIVE="ufo-${TAG}-macos-arm64.tar.gz"
+
+          tar -C "$BIN_DIR" -czf "$ARCHIVE" ufo
+          shasum -a 256 "$ARCHIVE" > "${ARCHIVE}.sha256"
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          TAG="${{ steps.package.outputs.tag }}"
+          ARCHIVE="${{ steps.package.outputs.archive }}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ARCHIVE" "${ARCHIVE}.sha256" --clobber
+          else
+            gh release create "$TAG" \
+              "$ARCHIVE" \
+              "${ARCHIVE}.sha256" \
+              --title "ufo ${TAG}" \
+              --target "$GITHUB_SHA" \
+              --generate-notes
+          fi
