@@ -5,7 +5,9 @@ import Testing
 struct HelpTextTests {
     @Test("Renders known topics")
     func renderKnownTopics() {
-        #expect(HelpText.render(topic: nil).contains("UFO - managed local keychain CLI"))
+        let root = HelpText.render(topic: nil)
+        #expect(root.contains("UFO - managed local keychain CLI"))
+        #expect(root.contains("ufo --env <VAR>"))
         #expect(HelpText.render(topic: "").contains("UFO - managed local keychain CLI"))
         #expect(HelpText.render(topic: "ufo").contains("UFO - managed local keychain CLI"))
         #expect(HelpText.render(topic: "keychain").contains("ufo keychain <subcommand>"))

@@ -8,6 +8,10 @@ public struct CommandParser {
             return .help(topic: nil)
         }
 
+        if arguments[0].hasPrefix("--") {
+            return try parseRootSecretRunShortcut(arguments)
+        }
+
         switch arguments[0] {
         case "help":
             return parseHelp(Array(arguments.dropFirst()))
@@ -20,6 +24,70 @@ public struct CommandParser {
         default:
             throw UFOError.usage("Unknown command '\(arguments[0])'. Use 'ufo help'.")
         }
+    }
+
+    private func parseRootSecretRunShortcut(_ arguments: [String]) throws -> Command {
+        let valueOptions: Set<String> = ["--env", "--keychain", "--service", "--account", "--timeout"]
+        var optionTokens: [String] = []
+        var index = 0
+
+        while index < arguments.count {
+            let token = arguments[index]
+            if token == "--" {
+                index += 1
+                break
+            }
+
+            guard token.hasPrefix("--") else {
+                break
+            }
+
+            guard valueOptions.contains(token) else {
+                throw UFOError.usage("Unknown option '\(token)'.")
+            }
+
+            guard index + 1 < arguments.count else {
+                throw UFOError.usage("Option '\(token)' requires a value.")
+            }
+
+            let value = arguments[index + 1]
+            guard !value.hasPrefix("--") else {
+                throw UFOError.usage("Option '\(token)' requires a value.")
+            }
+
+            optionTokens.append(token)
+            optionTokens.append(value)
+            index += 2
+        }
+
+        let commandTokens = Array(arguments.dropFirst(index))
+        guard let executable = commandTokens.first, !executable.isEmpty else {
+            throw UFOError.usage(
+                "Shortcut run requires a command. Example: 'ufo --env OPENAI_API_KEY python script.py'."
+            )
+        }
+
+        let options = try parseOptions(optionTokens, valueOptions: valueOptions, flagOptions: [])
+
+        let timeout: TimeInterval?
+        if let timeoutValue = options.values["--timeout"] {
+            guard let parsed = TimeInterval(timeoutValue), parsed.isFinite, parsed > 0 else {
+                throw UFOError.usage("Option '--timeout' requires a positive number of seconds.")
+            }
+            timeout = parsed
+        } else {
+            timeout = nil
+        }
+
+        return .secretRunShortcut(
+            keychain: options.values["--keychain"],
+            service: options.values["--service"],
+            account: options.values["--account"],
+            environmentVariable: try requiredOption("--env", from: options.values),
+            executable: executable,
+            arguments: Array(commandTokens.dropFirst()),
+            timeout: timeout
+        )
     }
 
     private func parseHelp(_ arguments: [String]) -> Command {

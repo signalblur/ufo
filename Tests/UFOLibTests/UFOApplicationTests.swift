@@ -249,6 +249,85 @@ struct UFOApplicationTests {
         #expect(firstRunInvocation.environment?["OPENAI_API_KEY"] == "runtime-secret")
     }
 
+    @Test("Shortcut run resolves defaults for single keychain and service token")
+    func secretRunShortcutDefaults() {
+        let fixture = makeFixture()
+        _ = fixture.app.run(arguments: ["keychain", "create", "alpha"])
+
+        fixture.inputReader.value = "stored-secret"
+        _ = fixture.app.run(arguments: [
+            "secret", "set",
+            "--keychain", "alpha",
+            "--service", "openai",
+            "--account", "ci",
+            "--stdin"
+        ])
+
+        fixture.processRunner.enqueueSuccess(standardOutput: Data("runtime-secret\n".utf8))
+        fixture.processRunner.enqueueSuccess(standardOutput: Data("shortcut-ok".utf8))
+        let shortcut = fixture.app.run(arguments: [
+            "--env", "OPENAI_API_KEY",
+            "python3",
+            "script.py"
+        ])
+
+        #expect(shortcut.exitCode == 0)
+        #expect(shortcut.standardOutput == "shortcut-ok")
+        #expect(shortcut.standardError.isEmpty)
+
+        #expect(fixture.processRunner.invocations.count == 4)
+        let getInvocation = fixture.processRunner.invocations[2]
+        #expect(getInvocation.arguments == [
+            "find-generic-password", "-s", "openai", "-a", "ci", "-w", "/Users/tester/.ufo/keychains/alpha.keychain-db"
+        ])
+
+        let childInvocation = fixture.processRunner.invocations[3]
+        #expect(childInvocation.executable == "/usr/bin/env")
+        #expect(childInvocation.arguments == ["--", "python3", "script.py"])
+        #expect(childInvocation.environment?["OPENAI_API_KEY"] == "runtime-secret")
+    }
+
+    @Test("Shortcut run requires explicit selectors for ambiguous defaults")
+    func secretRunShortcutAmbiguityHandling() {
+        let fixture = makeFixture()
+        _ = fixture.app.run(arguments: ["keychain", "create", "alpha"])
+
+        fixture.inputReader.value = "secret-one"
+        _ = fixture.app.run(arguments: [
+            "secret", "set",
+            "--keychain", "alpha",
+            "--service", "openai",
+            "--account", "ci",
+            "--stdin"
+        ])
+
+        fixture.inputReader.value = "secret-two"
+        _ = fixture.app.run(arguments: [
+            "secret", "set",
+            "--keychain", "alpha",
+            "--service", "openai",
+            "--account", "ops",
+            "--stdin"
+        ])
+
+        let ambiguousSecret = fixture.app.run(arguments: [
+            "--env", "OPENAI_API_KEY",
+            "python3",
+            "script.py"
+        ])
+        #expect(ambiguousSecret.exitCode == ExitCode.usage.rawValue)
+        #expect(ambiguousSecret.standardError.contains("Multiple secrets match --env OPENAI_API_KEY"))
+
+        _ = fixture.app.run(arguments: ["keychain", "create", "beta"])
+        let ambiguousKeychain = fixture.app.run(arguments: [
+            "--env", "OPENAI_API_KEY",
+            "python3",
+            "script.py"
+        ])
+        #expect(ambiguousKeychain.exitCode == ExitCode.usage.rawValue)
+        #expect(ambiguousKeychain.standardError.contains("Multiple managed keychains found"))
+    }
+
     @Test("Secret run validates env name and reports child failures")
     func secretRunValidationAndFailure() {
         let fixture = makeFixture()

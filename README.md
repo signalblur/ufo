@@ -21,6 +21,13 @@ bash Scripts/check-runtime-deps.sh
 
 `Scripts/check-runtime-deps.sh` verifies the release binary links only Apple system libraries.
 
+## CI and releases
+
+- GitHub Actions workflow: `.github/workflows/ci-release.yml`
+- On every push to `main`, CI runs (`swift build`, `swift test --parallel`, coverage gate, runtime dependency gate).
+- If CI passes on `main`, a GitHub Release is created automatically.
+- Release asset format: `ufo-main-<sha12>-macos-arm64.tar.gz` (arm64 only), plus a `.sha256` checksum file.
+
 ## Release binary posture
 
 - `ufo` is built as a single binary artifact.
@@ -47,6 +54,7 @@ ufo keychain list
 ufo keychain delete <name> --yes --confirm <name>
 ufo secret set --keychain <name> --service <svc> --account <acct> --stdin
 ufo secret run --keychain <name> --service <svc> --account <acct> --env <VAR> [--timeout <sec>] -- <cmd> [args...]
+ufo --env <VAR> [--keychain <name>] [--service <svc>] [--account <acct>] [--timeout <sec>] [--] <cmd> [args...]
 ufo secret get --keychain <name> --service <svc> --account <acct> --reveal
 ufo secret remove --keychain <name> --service <svc> --account <acct> --yes
 ufo secret search --keychain <name> --query <q>
@@ -61,6 +69,7 @@ ufo help [command]
 - Deletion is high-friction and requires both `--yes` and exact `--confirm <name>`.
 - Secret insertion is stdin-only to avoid argv secret exposure, stdin bytes are stored verbatim, and stdin is limited to 16384 bytes.
 - Secret script execution injects resolved secrets through process environment variables, not argv.
+- Shortcut run defaults to the only managed keychain and can infer secret metadata from `--env` when unambiguous.
 - Secret retrieval requires explicit `--reveal`.
 - Secret retrieval removes exactly one transport newline from `security` output and preserves payload newlines.
 - Search returns metadata only (service/account), never secret values.
@@ -72,6 +81,18 @@ ufo help [command]
 Child stdout/stderr and exit code are passed through.
 
 For safety, process-control variables like `PATH`, `DYLD_*`, and `LD_*` are blocked for `--env`.
+
+If you already have one managed keychain and an unambiguous metadata match, use shortcut mode:
+
+```bash
+ufo --env OPENAI_API_KEY python script.py
+```
+
+Optional selectors can disambiguate shortcut mode:
+
+```bash
+ufo --env OPENAI_API_KEY --service openai --account ci python script.py
+```
 
 ```bash
 ufo secret run \

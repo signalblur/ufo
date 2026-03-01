@@ -90,6 +90,46 @@ struct CommandParserTests {
 
     @Test("Parses secret get/run/remove/search")
     func parseSecretCommands() throws {
+        let shortcut = try parser.parse([
+            "--env", "OPENAI_API_KEY",
+            "python",
+            "script.py"
+        ])
+        #expect(
+            shortcut == .secretRunShortcut(
+                keychain: nil,
+                service: nil,
+                account: nil,
+                environmentVariable: "OPENAI_API_KEY",
+                executable: "python",
+                arguments: ["script.py"],
+                timeout: nil
+            )
+        )
+
+        let shortcutWithSelectors = try parser.parse([
+            "--env", "OPENAI_API_KEY",
+            "--keychain", "k",
+            "--service", "openai",
+            "--account", "ci",
+            "--timeout", "12",
+            "--",
+            "/usr/bin/python3",
+            "script.py",
+            "--flag"
+        ])
+        #expect(
+            shortcutWithSelectors == .secretRunShortcut(
+                keychain: "k",
+                service: "openai",
+                account: "ci",
+                environmentVariable: "OPENAI_API_KEY",
+                executable: "/usr/bin/python3",
+                arguments: ["script.py", "--flag"],
+                timeout: 12
+            )
+        )
+
         let run = try parser.parse([
             "secret", "run",
             "--keychain", "k",
@@ -164,6 +204,22 @@ struct CommandParserTests {
     func parseInvalidForms() {
         expectError(.usage("Unknown command 'unknown'. Use 'ufo help'.")) {
             _ = try parser.parse(["unknown"])
+        }
+
+        expectError(.usage("Unknown option '--bogus'.")) {
+            _ = try parser.parse(["--bogus", "x", "python"])
+        }
+
+        expectError(.usage("Missing required option '--env'.")) {
+            _ = try parser.parse(["--keychain", "k", "python"])
+        }
+
+        expectError(.usage("Shortcut run requires a command. Example: 'ufo --env OPENAI_API_KEY python script.py'.")) {
+            _ = try parser.parse(["--env", "OPENAI_API_KEY"])
+        }
+
+        expectError(.usage("Option '--timeout' requires a positive number of seconds.")) {
+            _ = try parser.parse(["--env", "OPENAI_API_KEY", "--timeout", "inf", "python"])
         }
 
         expectError(.usage("'doctor' does not accept arguments.")) {

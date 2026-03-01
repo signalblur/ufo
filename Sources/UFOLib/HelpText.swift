@@ -53,6 +53,7 @@ public enum HelpText {
       keychain delete <name> --yes --confirm <name>
       secret set --keychain <name> --service <svc> --account <acct> --stdin
       secret run --keychain <name> --service <svc> --account <acct> --env <VAR> [--timeout <sec>] -- <cmd> [args...]
+      --env <VAR> [--keychain <name>] [--service <svc>] [--account <acct>] [--timeout <sec>] [--] <cmd> [args...]
       secret get --keychain <name> --service <svc> --account <acct> --reveal
       secret remove --keychain <name> --service <svc> --account <acct> --yes
       secret search --keychain <name> --query <q>
@@ -64,12 +65,14 @@ public enum HelpText {
       - Protected keychains (login, iCloud, System, Local Items) are blocked.
       - Secrets are never written to logs.
       - secret run injects secrets into child process environment variables.
+      - Shortcut run defaults to the only managed keychain and can infer service/account from --env.
       - security subprocesses use bounded timeouts with forced cleanup on hangs.
 
     Examples:
       ufo keychain create team-api
       ufo secret set --keychain team-api --service github --account ci --stdin
       ufo secret run --keychain team-api --service openai --account ci --env OPENAI_API_KEY -- python script.py
+      ufo --env OPENAI_API_KEY python script.py
       ufo secret get --keychain team-api --service github --account ci --reveal
       ufo help secret set
     """
@@ -142,6 +145,11 @@ public enum HelpText {
     Resolve a secret from a managed keychain and run a child command with that
     secret injected into environment variable <VAR>.
     Child stdout, stderr, and exit code are returned directly.
+
+    Shortcut mode:
+      ufo --env <VAR> [--keychain <name>] [--service <svc>] [--account <acct>] [--timeout <sec>] [--] <cmd> [args...]
+      Defaults to the only managed keychain when --keychain is omitted.
+      If --service/--account are omitted, UFO infers metadata from --env when unambiguous.
 
     Examples:
       ufo secret run --keychain team-api --service openai --account ci --env OPENAI_API_KEY -- python script.py

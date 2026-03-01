@@ -78,6 +78,15 @@ public enum Command: Equatable {
         arguments: [String],
         timeout: TimeInterval?
     )
+    case secretRunShortcut(
+        keychain: String?,
+        service: String?,
+        account: String?,
+        environmentVariable: String,
+        executable: String,
+        arguments: [String],
+        timeout: TimeInterval?
+    )
     case secretGet(keychain: String, service: String, account: String, reveal: Bool)
     case secretRemove(keychain: String, service: String, account: String, yes: Bool)
     case secretSearch(keychain: String, query: String)

@@ -99,6 +99,24 @@ public final class UFOApplication {
                 arguments: arguments,
                 timeout: timeout
             )
+        case .secretRunShortcut(
+            let keychain,
+            let service,
+            let account,
+            let environmentVariable,
+            let executable,
+            let arguments,
+            let timeout
+        ):
+            return try runSecretCommandShortcut(
+                keychain: keychain,
+                service: service,
+                account: account,
+                environmentVariable: environmentVariable,
+                executable: executable,
+                arguments: arguments,
+                timeout: timeout
+            )
         case .secretGet(let keychain, let service, let account, let reveal):
             return successResult(try getSecret(keychain: keychain, service: service, account: account, reveal: reveal))
         case .secretRemove(let keychain, let service, let account, let yes):
@@ -278,6 +296,160 @@ public final class UFOApplication {
         )
     }
 
+    private func runSecretCommandShortcut(
+        keychain: String?,
+        service: String?,
+        account: String?,
+        environmentVariable: String,
+        executable: String,
+        arguments: [String],
+        timeout: TimeInterval?
+    ) throws -> CommandResult {
+        try InputValidation.validateEnvironmentVariableName(environmentVariable)
+        if let service {
+            try InputValidation.validateService(service)
+        }
+        if let account {
+            try InputValidation.validateAccount(account)
+        }
+
+        let managed = try resolveManagedKeychainForShortcut(named: keychain)
+        let resolved = try resolveSecretMetadataForShortcut(
+            in: managed,
+            environmentVariable: environmentVariable,
+            service: service,
+            account: account
+        )
+
+        return try runSecretCommand(
+            keychain: managed.name,
+            service: resolved.service,
+            account: resolved.account,
+            environmentVariable: environmentVariable,
+            executable: executable,
+            arguments: arguments,
+            timeout: timeout
+        )
+    }
+
+    private func resolveManagedKeychainForShortcut(named name: String?) throws -> ManagedKeychain {
+        if let name {
+            let managed = try requireManagedKeychain(named: name)
+            try policy.assertNameAllowed(managed.name)
+            try policy.assertPathAllowed(managed.path)
+            return managed
+        }
+
+        let keychains = try registryStore.listKeychains()
+        guard !keychains.isEmpty else {
+            throw UFOError.notFound("No managed keychains found. Create one with 'ufo keychain create <name>'.")
+        }
+
+        guard keychains.count == 1 else {
+            throw UFOError.usage(
+                "Multiple managed keychains found. Provide --keychain or use 'ufo secret run ...' with explicit selectors."
+            )
+        }
+
+        let managed = keychains[0]
+        try policy.assertNameAllowed(managed.name)
+        try policy.assertPathAllowed(managed.path)
+        return managed
+    }
+
+    private func resolveSecretMetadataForShortcut(
+        in managed: ManagedKeychain,
+        environmentVariable: String,
+        service: String?,
+        account: String?
+    ) throws -> SecretMetadata {
+        guard !managed.secrets.isEmpty else {
+            throw UFOError.notFound(
+                "No secret metadata found in keychain '\(managed.name)'. Store a secret first with 'ufo secret set'."
+            )
+        }
+
+        var candidates = managed.secrets
+        if let service {
+            candidates = candidates.filter { $0.service == service }
+        }
+        if let account {
+            candidates = candidates.filter { $0.account == account }
+        }
+
+        if service != nil || account != nil {
+            guard !candidates.isEmpty else {
+                var selectors: [String] = []
+                if let service {
+                    selectors.append("service '\(service)'")
+                }
+                if let account {
+                    selectors.append("account '\(account)'")
+                }
+                throw UFOError.notFound(
+                    "No secret metadata matches \(selectors.joined(separator: " and ")) in keychain '\(managed.name)'."
+                )
+            }
+
+            guard candidates.count == 1 else {
+                throw UFOError.usage(
+                    "Multiple secret metadata entries match in keychain '\(managed.name)'. Provide both --service and --account."
+                )
+            }
+            return candidates[0]
+        }
+
+        let envLookupTokens = defaultLookupTokens(for: environmentVariable)
+        let envMatches = candidates.filter { metadata in
+            let serviceToken = normalizeLookupToken(metadata.service)
+            let accountToken = normalizeLookupToken(metadata.account)
+            return envLookupTokens.contains(serviceToken) || envLookupTokens.contains(accountToken)
+        }
+
+        if envMatches.count == 1 {
+            return envMatches[0]
+        }
+
+        if envMatches.count > 1 {
+            throw UFOError.usage(
+                "Multiple secrets match --env \(environmentVariable) in keychain '\(managed.name)'. Provide --service and --account."
+            )
+        }
+
+        if candidates.count == 1 {
+            return candidates[0]
+        }
+
+        throw UFOError.usage(
+            "Multiple secrets are stored in keychain '\(managed.name)'. Provide --service and --account."
+        )
+    }
+
+    private func defaultLookupTokens(for environmentVariable: String) -> Set<String> {
+        let normalized = normalizeLookupToken(environmentVariable)
+        guard !normalized.isEmpty else {
+            return []
+        }
+
+        var tokens: Set<String> = [normalized]
+        let suffixes = ["_API_KEY", "_TOKEN", "_KEY", "_SECRET"]
+        for suffix in suffixes where normalized.hasSuffix(suffix) {
+            let trimmed = String(normalized.dropLast(suffix.count))
+            if !trimmed.isEmpty {
+                tokens.insert(trimmed)
+            }
+        }
+
+        return tokens
+    }
+
+    private func normalizeLookupToken(_ value: String) -> String {
+        let uppercased = value.uppercased()
+        let replaced = uppercased.replacingOccurrences(of: "[^A-Z0-9]+", with: "_", options: .regularExpression)
+        let collapsed = replaced.replacingOccurrences(of: "_{2,}", with: "_", options: .regularExpression)
+        return collapsed.trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+    }
+
     private func removeSecret(
         keychain: String,
         service: String,
@@ -387,6 +559,8 @@ public final class UFOApplication {
             return "secret.set"
         case .secretRun:
             return "secret.run"
+        case .secretRunShortcut:
+            return "secret.run.shortcut"
         case .secretGet:
             return "secret.get"
         case .secretRemove:
@@ -401,11 +575,19 @@ public final class UFOApplication {
     }
 
     private func eventName(for arguments: [String]) -> String {
+        guard let first = arguments.first else {
+            return "unknown"
+        }
+
+        if first.hasPrefix("--") {
+            return "secret.run.shortcut"
+        }
+
         if arguments.count >= 2 {
             return "\(arguments[0]).\(arguments[1])"
         }
 
-        return arguments[0]
+        return first
     }
 
     private func metadata(for command: Command) -> [String: String] {
@@ -439,6 +621,24 @@ public final class UFOApplication {
                 "keychain": keychain,
                 "service": service,
                 "account": account,
+                "env": environmentVariable,
+                "command": executable,
+                "timeout": String(timeoutSeconds)
+            ]
+        case .secretRunShortcut(
+            let keychain,
+            let service,
+            let account,
+            let environmentVariable,
+            let executable,
+            _,
+            let timeout
+        ):
+            let timeoutSeconds = timeout ?? Self.defaultSecretRunTimeout
+            return [
+                "keychain": keychain ?? "<auto>",
+                "service": service ?? "<auto>",
+                "account": account ?? "<auto>",
                 "env": environmentVariable,
                 "command": executable,
                 "timeout": String(timeoutSeconds)
