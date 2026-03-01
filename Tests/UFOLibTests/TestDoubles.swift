@@ -72,15 +72,21 @@ final class FakeClock: Clock {
 final class FakeInputReader: InputReading {
     var value: String
     var error: Error?
+    var requestedMaxBytes: [Int]
 
     init(value: String = "", error: Error? = nil) {
         self.value = value
         self.error = error
+        self.requestedMaxBytes = []
     }
 
-    func readStandardInput() throws -> String {
+    func readStandardInput(maxBytes: Int) throws -> String {
+        requestedMaxBytes.append(maxBytes)
         if let error {
             throw error
+        }
+        if value.utf8.count > maxBytes {
+            throw UFOError.validation("Secret stdin input exceeds \(maxBytes) bytes.")
         }
         return value
     }

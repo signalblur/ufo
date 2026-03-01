@@ -165,7 +165,7 @@ public final class UFOApplication {
         try policy.assertNameAllowed(managed.name)
         try policy.assertPathAllowed(managed.path)
 
-        let rawValue = try inputReader.readStandardInput()
+        let rawValue = try inputReader.readStandardInput(maxBytes: InputValidation.maximumSecretInputBytes)
 
         try InputValidation.validateSecret(rawValue)
 

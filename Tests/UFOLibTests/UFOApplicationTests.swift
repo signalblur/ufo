@@ -124,6 +124,11 @@ struct UFOApplicationTests {
             "secret", "set", "--keychain", "alpha", "--service", "github", "--account", "bot", "--stdin"
         ])
         #expect(setSecondGithub.exitCode == 0)
+        #expect(fixture.inputReader.requestedMaxBytes == [
+            InputValidation.maximumSecretInputBytes,
+            InputValidation.maximumSecretInputBytes,
+            InputValidation.maximumSecretInputBytes
+        ])
 
         let search = fixture.app.run(arguments: [
             "secret", "search", "--keychain", "alpha", "--query", "ap"
@@ -181,6 +186,7 @@ struct UFOApplicationTests {
             "secret", "set", "--keychain", "missing", "--service", "svc", "--account", "acct", "--stdin"
         ])
         #expect(missingManaged.exitCode == ExitCode.notFound.rawValue)
+        #expect(fixture.inputReader.requestedMaxBytes.isEmpty)
 
         _ = fixture.app.run(arguments: ["keychain", "create", "alpha"])
         let emptyQuery = fixture.app.run(arguments: [
@@ -194,6 +200,20 @@ struct UFOApplicationTests {
         ])
         #expect(emptyStdinSecret.exitCode == ExitCode.policyDenied.rawValue)
         #expect(emptyStdinSecret.standardError.contains("Secret value cannot be empty"))
+
+        fixture.inputReader.value = String(repeating: "a", count: InputValidation.maximumSecretInputBytes + 1)
+        let oversizedStdinSecret = fixture.app.run(arguments: [
+            "secret", "set", "--keychain", "alpha", "--service", "svc", "--account", "acct", "--stdin"
+        ])
+        #expect(oversizedStdinSecret.exitCode == ExitCode.policyDenied.rawValue)
+        #expect(
+            oversizedStdinSecret.standardError
+                .contains("Secret stdin input exceeds \(InputValidation.maximumSecretInputBytes) bytes")
+        )
+        #expect(fixture.inputReader.requestedMaxBytes == [
+            InputValidation.maximumSecretInputBytes,
+            InputValidation.maximumSecretInputBytes
+        ])
     }
 
     @Test("Doctor reports success and failure details")

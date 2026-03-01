@@ -9,8 +9,33 @@ struct SystemClock: Clock {
 }
 
 struct StandardInputReader: InputReading {
-    func readStandardInput() throws -> String {
-        let data = FileHandle.standardInput.readDataToEndOfFile()
+    private let standardInput: FileHandle
+    private let chunkSize: Int
+
+    init(standardInput: FileHandle = .standardInput, chunkSize: Int = 4096) {
+        self.standardInput = standardInput
+        self.chunkSize = max(1, chunkSize)
+    }
+
+    func readStandardInput(maxBytes: Int) throws -> String {
+        guard maxBytes > 0 else {
+            throw UFOError.io("Standard input byte limit must be greater than zero.")
+        }
+
+        var data = Data()
+        while true {
+            let nextReadLength = min(chunkSize, maxBytes - data.count + 1)
+            let chunk = standardInput.readData(ofLength: nextReadLength)
+            if chunk.isEmpty {
+                break
+            }
+
+            data.append(chunk)
+            if data.count > maxBytes {
+                throw UFOError.validation("Secret stdin input exceeds \(maxBytes) bytes.")
+            }
+        }
+
         guard let value = String(data: data, encoding: .utf8) else {
             throw UFOError.io("Standard input is not valid UTF-8.")
         }
@@ -28,6 +53,8 @@ final class SystemProcessRunner: ProcessRunning {
         guard timeout > 0 else {
             throw UFOError.subprocess("Subprocess timeout must be greater than zero seconds.")
         }
+
+        let deadline = DispatchTime.now() + timeout
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -47,12 +74,22 @@ final class SystemProcessRunner: ProcessRunning {
         process.standardError = errorPipe
 
         let inputPipe: Pipe?
+        let nullInputHandle: FileHandle?
         if standardInput != nil {
             let pipe = Pipe()
             process.standardInput = pipe
             inputPipe = pipe
+            nullInputHandle = nil
         } else {
+            guard let handle = FileHandle(forReadingAtPath: "/dev/null") else {
+                throw UFOError.subprocess("Failed to open /dev/null for subprocess stdin redirection.")
+            }
+            process.standardInput = handle
             inputPipe = nil
+            nullInputHandle = handle
+        }
+        defer {
+            nullInputHandle?.closeFile()
         }
 
         do {
@@ -89,17 +126,22 @@ final class SystemProcessRunner: ProcessRunning {
         }
 
         if let payload = standardInput, let inputPipe {
-            inputPipe.fileHandleForWriting.write(payload)
             do {
-                try inputPipe.fileHandleForWriting.close()
-            } catch {
+                try writeStandardInput(
+                    payload,
+                    to: inputPipe.fileHandleForWriting,
+                    executable: executable,
+                    deadline: deadline,
+                    timeout: timeout
+                )
+            } catch let error as UFOError {
                 terminateAndReap(process, completion: completion)
                 awaitPipeReaders(readerGroup, outputPipe: outputPipe, errorPipe: errorPipe)
-                throw UFOError.subprocess("Failed to close subprocess stdin at \(executable): \(error.localizedDescription)")
+                throw error
             }
         }
 
-        let waitResult = completion.wait(timeout: .now() + timeout)
+        let waitResult = completion.wait(timeout: deadline)
         guard waitResult == .success else {
             terminateAndReap(process, completion: completion)
             awaitPipeReaders(readerGroup, outputPipe: outputPipe, errorPipe: errorPipe)
@@ -150,6 +192,52 @@ final class SystemProcessRunner: ProcessRunning {
         outputPipe.fileHandleForReading.closeFile()
         errorPipe.fileHandleForReading.closeFile()
         _ = group.wait(timeout: .now() + 1)
+    }
+
+    private func writeStandardInput(
+        _ payload: Data,
+        to handle: FileHandle,
+        executable: String,
+        deadline: DispatchTime,
+        timeout: TimeInterval
+    ) throws {
+        let completion = DispatchSemaphore(value: 0)
+        let stateQueue = DispatchQueue(label: "ufo.system-process-runner.stdin-write-state")
+        var writeError: Error?
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let descriptor = handle.fileDescriptor
+            if fcntl(descriptor, F_SETNOSIGPIPE, 1) == -1 {
+                let errorCode = errno
+                let message = String(cString: strerror(errorCode))
+                stateQueue.sync {
+                    writeError = UFOError.subprocess("Failed to configure subprocess stdin writer: \(message)")
+                }
+                completion.signal()
+                return
+            }
+
+            do {
+                try handle.write(contentsOf: payload)
+                try handle.close()
+            } catch {
+                stateQueue.sync {
+                    writeError = error
+                }
+            }
+            completion.signal()
+        }
+
+        let waitResult = completion.wait(timeout: deadline)
+        guard waitResult == .success else {
+            throw UFOError.subprocess(
+                "Subprocess stdin write timed out after \(formatTimeout(timeout)) seconds at \(executable)."
+            )
+        }
+
+        if let writeError = stateQueue.sync(execute: { writeError }) {
+            throw UFOError.subprocess("Failed writing subprocess stdin at \(executable): \(writeError.localizedDescription)")
+        }
     }
 }
 

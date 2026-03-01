@@ -29,5 +29,5 @@ public protocol Clock {
 }
 
 public protocol InputReading {
-    func readStandardInput() throws -> String
+    func readStandardInput(maxBytes: Int) throws -> String
 }

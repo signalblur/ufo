@@ -126,6 +126,7 @@ public enum HelpText {
 
     Store or update a generic password item in a managed keychain.
     Standard input is stored verbatim; use printf to avoid an accidental trailing newline.
+    Standard input is limited to 16384 bytes.
     """
 
     private static let secretGetHelp = """

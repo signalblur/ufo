@@ -2,6 +2,8 @@ import Foundation
 
 public enum InputValidation {
     private static let controlCharacters = CharacterSet.controlCharacters
+    public static let maximumSecretCharacters = 4_096
+    public static let maximumSecretInputBytes = maximumSecretCharacters * 4
 
     public static func validateKeychainName(_ name: String) throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -42,8 +44,8 @@ public enum InputValidation {
             throw UFOError.validation("Secret value cannot be empty.")
         }
 
-        guard value.count <= 4_096 else {
-            throw UFOError.validation("Secret value must be 4096 characters or fewer.")
+        guard value.count <= maximumSecretCharacters else {
+            throw UFOError.validation("Secret value must be \(maximumSecretCharacters) characters or fewer.")
         }
 
         guard value.unicodeScalars.first(where: { $0.value == 0 }) == nil else {

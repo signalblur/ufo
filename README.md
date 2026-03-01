@@ -58,7 +58,7 @@ ufo help [command]
 - Mutating operations are restricted to UFO-managed keychains in the registry.
 - Protected keychains and protected keychain locations are denied.
 - Deletion is high-friction and requires both `--yes` and exact `--confirm <name>`.
-- Secret insertion is stdin-only to avoid argv secret exposure, and stdin bytes are stored verbatim.
+- Secret insertion is stdin-only to avoid argv secret exposure, stdin bytes are stored verbatim, and stdin is limited to 16384 bytes.
 - Secret retrieval requires explicit `--reveal`.
 - Secret retrieval removes exactly one transport newline from `security` output and preserves payload newlines.
 - Search returns metadata only (service/account), never secret values.
