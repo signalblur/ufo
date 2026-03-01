@@ -15,6 +15,7 @@ struct HelpTextTests {
         #expect(HelpText.render(topic: "keychain delete").contains("ufo keychain delete"))
         #expect(HelpText.render(topic: "secret").contains("ufo secret <subcommand>"))
         #expect(HelpText.render(topic: "secret set").contains("ufo secret set"))
+        #expect(HelpText.render(topic: "secret run").contains("ufo secret run"))
         #expect(HelpText.render(topic: "secret get").contains("ufo secret get"))
         #expect(HelpText.render(topic: "secret remove").contains("ufo secret remove"))
         #expect(HelpText.render(topic: "secret search").contains("ufo secret search"))

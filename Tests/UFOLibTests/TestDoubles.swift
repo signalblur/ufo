@@ -7,6 +7,7 @@ final class FakeProcessRunner: ProcessRunning {
         let arguments: [String]
         let standardInput: Data?
         let timeout: TimeInterval
+        let environment: [String: String]?
     }
 
     var invocations: [Invocation] = []
@@ -32,14 +33,16 @@ final class FakeProcessRunner: ProcessRunning {
         executable: String,
         arguments: [String],
         standardInput: Data?,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        environment: [String: String]?
     ) throws -> ProcessResult {
         invocations.append(
             Invocation(
                 executable: executable,
                 arguments: arguments,
                 standardInput: standardInput,
-                timeout: timeout
+                timeout: timeout,
+                environment: environment
             )
         )
 

@@ -48,7 +48,8 @@ final class SystemProcessRunner: ProcessRunning {
         executable: String,
         arguments: [String],
         standardInput: Data?,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        environment: [String: String]?
     ) throws -> ProcessResult {
         guard timeout > 0 else {
             throw UFOError.subprocess("Subprocess timeout must be greater than zero seconds.")
@@ -59,6 +60,9 @@ final class SystemProcessRunner: ProcessRunning {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        if let environment {
+            process.environment = environment
+        }
 
         let completion = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in
@@ -382,6 +386,7 @@ final class SystemFileSystem: FileSysteming {
 func buildApplication() -> UFOApplication {
     let fileSystem = SystemFileSystem()
     let clock = SystemClock()
+    let processRunner = SystemProcessRunner()
 
     return UFOApplication(
         parser: CommandParser(),
@@ -389,7 +394,8 @@ func buildApplication() -> UFOApplication {
         inputReader: StandardInputReader(),
         policy: KeychainProtectionPolicy(fileSystem: fileSystem),
         registryStore: ManagedRegistryStore(fileSystem: fileSystem, clock: clock),
-        securityCLI: SecurityCLI(processRunner: SystemProcessRunner()),
+        securityCLI: SecurityCLI(processRunner: processRunner),
+        processRunner: processRunner,
         auditLogger: AuditLogger(fileSystem: fileSystem, clock: clock)
     )
 }

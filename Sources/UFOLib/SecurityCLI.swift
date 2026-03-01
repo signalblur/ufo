@@ -85,7 +85,8 @@ public final class SecurityCLI {
                 executable: Self.executablePath,
                 arguments: arguments,
                 standardInput: standardInput,
-                timeout: subprocessTimeout
+                timeout: subprocessTimeout,
+                environment: nil
             )
         } catch let error as UFOError {
             throw error

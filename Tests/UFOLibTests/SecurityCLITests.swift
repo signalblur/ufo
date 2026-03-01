@@ -20,6 +20,7 @@ struct SecurityCLITests {
         for (index, invocation) in runner.invocations.enumerated() {
             #expect(invocation.executable == "/usr/bin/security")
             #expect(invocation.timeout == SecurityCLI.defaultSubprocessTimeout)
+            #expect(invocation.environment == nil)
             if index == 3 {
                 #expect(invocation.standardInput != nil)
             } else {

@@ -216,6 +216,88 @@ struct UFOApplicationTests {
         ])
     }
 
+    @Test("Secret run injects secret into child process environment")
+    func secretRunWorkflow() {
+        let fixture = makeFixture()
+        _ = fixture.app.run(arguments: ["keychain", "create", "alpha"])
+
+        fixture.processRunner.enqueueSuccess(standardOutput: Data("runtime-secret\n".utf8))
+        fixture.processRunner.enqueueSuccess(standardOutput: Data("script-ok".utf8))
+        let run = fixture.app.run(arguments: [
+            "secret", "run",
+            "--keychain", "alpha",
+            "--service", "openai",
+            "--account", "ci",
+            "--env", "OPENAI_API_KEY",
+            "--",
+            "python3",
+            "script.py",
+            "--mode",
+            "prod"
+        ])
+
+        #expect(run.exitCode == 0)
+        #expect(run.standardOutput == "script-ok")
+        #expect(run.standardError.isEmpty)
+
+        #expect(fixture.processRunner.invocations.count == 3)
+        let firstRunInvocation = fixture.processRunner.invocations[2]
+        #expect(firstRunInvocation.executable == "/usr/bin/env")
+        #expect(firstRunInvocation.arguments == ["--", "python3", "script.py", "--mode", "prod"])
+        #expect(firstRunInvocation.timeout == 300)
+        #expect(firstRunInvocation.standardInput == nil)
+        #expect(firstRunInvocation.environment?["OPENAI_API_KEY"] == "runtime-secret")
+    }
+
+    @Test("Secret run validates env name and reports child failures")
+    func secretRunValidationAndFailure() {
+        let fixture = makeFixture()
+        _ = fixture.app.run(arguments: ["keychain", "create", "alpha"])
+
+        let invalidEnv = fixture.app.run(arguments: [
+            "secret", "run",
+            "--keychain", "alpha",
+            "--service", "openai",
+            "--account", "ci",
+            "--env", "BAD-NAME",
+            "--",
+            "python3",
+            "script.py"
+        ])
+        #expect(invalidEnv.exitCode == ExitCode.policyDenied.rawValue)
+        #expect(invalidEnv.standardError.contains("Environment variable name"))
+
+        let blockedEnv = fixture.app.run(arguments: [
+            "secret", "run",
+            "--keychain", "alpha",
+            "--service", "openai",
+            "--account", "ci",
+            "--env", "PATH",
+            "--",
+            "python3",
+            "script.py"
+        ])
+        #expect(blockedEnv.exitCode == ExitCode.policyDenied.rawValue)
+        #expect(blockedEnv.standardError.contains("is blocked for safety"))
+
+        fixture.processRunner.enqueueSuccess(standardOutput: Data("super-secret\n".utf8))
+        fixture.processRunner.enqueueSuccess(exitCode: 7, standardError: Data("child stderr".utf8))
+        let failedChild = fixture.app.run(arguments: [
+            "secret", "run",
+            "--keychain", "alpha",
+            "--service", "openai",
+            "--account", "ci",
+            "--env", "OPENAI_API_KEY",
+            "--",
+            "python3",
+            "script.py"
+        ])
+        #expect(failedChild.exitCode == 7)
+        #expect(failedChild.standardOutput.isEmpty)
+        #expect(failedChild.standardError == "child stderr")
+        #expect(failedChild.standardError.contains("super-secret") == false)
+    }
+
     @Test("Doctor reports success and failure details")
     func doctorOutput() {
         let fixture = makeFixture()
@@ -236,6 +318,7 @@ struct UFOApplicationTests {
             policy: KeychainProtectionPolicy(fileSystem: badFileSystem),
             registryStore: badStore,
             securityCLI: SecurityCLI(processRunner: fixture.processRunner),
+            processRunner: fixture.processRunner,
             auditLogger: AuditLogger(fileSystem: badFileSystem, clock: fixture.clock)
         )
 
@@ -260,6 +343,7 @@ struct UFOApplicationTests {
             policy: KeychainProtectionPolicy(fileSystem: fallbackFileSystem),
             registryStore: fallbackStore,
             securityCLI: SecurityCLI(processRunner: fixture.processRunner),
+            processRunner: fixture.processRunner,
             auditLogger: AuditLogger(fileSystem: fallbackFileSystem, clock: fixture.clock)
         )
         let fallback = fallbackApp.run(arguments: ["doctor"])
@@ -282,6 +366,7 @@ struct UFOApplicationTests {
             policy: KeychainProtectionPolicy(fileSystem: genericRegistryFileSystem),
             registryStore: genericStore,
             securityCLI: SecurityCLI(processRunner: fixture.processRunner),
+            processRunner: fixture.processRunner,
             auditLogger: AuditLogger(fileSystem: genericRegistryFileSystem, clock: fixture.clock)
         )
         let genericRegistryFailure = genericRegistryApp.run(arguments: ["doctor"])
@@ -303,6 +388,7 @@ struct UFOApplicationTests {
             policy: KeychainProtectionPolicy(fileSystem: fixture.fileSystem),
             registryStore: fixture.registryStore,
             securityCLI: SecurityCLI(processRunner: fixture.processRunner),
+            processRunner: fixture.processRunner,
             auditLogger: fixture.logger
         )
 
@@ -353,6 +439,7 @@ private func makeFixture() -> AppFixture {
         policy: KeychainProtectionPolicy(fileSystem: fileSystem),
         registryStore: registryStore,
         securityCLI: SecurityCLI(processRunner: processRunner),
+        processRunner: processRunner,
         auditLogger: logger
     )
 

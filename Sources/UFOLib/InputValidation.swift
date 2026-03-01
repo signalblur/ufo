@@ -2,6 +2,17 @@ import Foundation
 
 public enum InputValidation {
     private static let controlCharacters = CharacterSet.controlCharacters
+    private static let environmentVariablePattern = "^[A-Za-z_][A-Za-z0-9_]*$"
+    private static let blockedEnvironmentVariables: Set<String> = [
+        "PATH",
+        "HOME",
+        "SHELL",
+        "TMPDIR",
+        "LD_LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+        "DYLD_FRAMEWORK_PATH",
+        "DYLD_INSERT_LIBRARIES"
+    ]
     public static let maximumSecretCharacters = 4_096
     public static let maximumSecretInputBytes = maximumSecretCharacters * 4
 
@@ -37,6 +48,30 @@ public enum InputValidation {
 
     public static func validateQuery(_ query: String) throws {
         try validateLabel(query, fieldName: "Query")
+    }
+
+    public static func validateEnvironmentVariableName(_ value: String) throws {
+        guard !value.isEmpty else {
+            throw UFOError.validation("Environment variable name cannot be empty.")
+        }
+
+        guard value.count <= 128 else {
+            throw UFOError.validation("Environment variable name must be 128 characters or fewer.")
+        }
+
+        let range = NSRange(location: 0, length: value.utf16.count)
+        let regex = try NSRegularExpression(pattern: environmentVariablePattern)
+        guard regex.firstMatch(in: value, options: [], range: range) != nil else {
+            throw UFOError.validation(
+                "Environment variable name must start with a letter or underscore and contain only letters, numbers, or underscores."
+            )
+        }
+
+        if blockedEnvironmentVariables.contains(value) || value.hasPrefix("DYLD_") || value.hasPrefix("LD_") {
+            throw UFOError.validation(
+                "Environment variable '\(value)' is blocked for safety. Use an app-specific variable name."
+            )
+        }
     }
 
     public static func validateSecret(_ value: String) throws {

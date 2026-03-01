@@ -5,7 +5,8 @@ public protocol ProcessRunning {
         executable: String,
         arguments: [String],
         standardInput: Data?,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        environment: [String: String]?
     ) throws -> ProcessResult
 }
 

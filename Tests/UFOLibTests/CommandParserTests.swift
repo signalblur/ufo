@@ -88,8 +88,54 @@ struct CommandParserTests {
         }
     }
 
-    @Test("Parses secret get/remove/search")
+    @Test("Parses secret get/run/remove/search")
     func parseSecretCommands() throws {
+        let run = try parser.parse([
+            "secret", "run",
+            "--keychain", "k",
+            "--service", "svc",
+            "--account", "acct",
+            "--env", "OPENAI_API_KEY",
+            "--timeout", "45.5",
+            "--",
+            "python",
+            "script.py"
+        ])
+        #expect(
+            run == .secretRun(
+                keychain: "k",
+                service: "svc",
+                account: "acct",
+                environmentVariable: "OPENAI_API_KEY",
+                executable: "python",
+                arguments: ["script.py"],
+                timeout: 45.5
+            )
+        )
+
+        let runDefaultTimeout = try parser.parse([
+            "secret", "run",
+            "--keychain", "k",
+            "--service", "svc",
+            "--account", "acct",
+            "--env", "OPENAI_API_KEY",
+            "--",
+            "/usr/bin/python3",
+            "script.py",
+            "--flag"
+        ])
+        #expect(
+            runDefaultTimeout == .secretRun(
+                keychain: "k",
+                service: "svc",
+                account: "acct",
+                environmentVariable: "OPENAI_API_KEY",
+                executable: "/usr/bin/python3",
+                arguments: ["script.py", "--flag"],
+                timeout: nil
+            )
+        )
+
         let get = try parser.parse([
             "secret", "get", "--keychain", "k", "--service", "svc", "--account", "acct", "--reveal"
         ])
@@ -161,6 +207,39 @@ struct CommandParserTests {
         expectError(.usage("Option '--yes' was provided multiple times.")) {
             _ = try parser.parse([
                 "keychain", "delete", "name", "--yes", "--yes", "--confirm", "name"
+            ])
+        }
+
+        expectError(.usage("'secret run' requires '-- <command> [args...]'.")) {
+            _ = try parser.parse([
+                "secret", "run", "--keychain", "k", "--service", "svc", "--account", "acct", "--env", "X"
+            ])
+        }
+
+        expectError(.usage("'secret run' requires a command after '--'.")) {
+            _ = try parser.parse([
+                "secret", "run", "--keychain", "k", "--service", "svc", "--account", "acct", "--env", "X", "--"
+            ])
+        }
+
+        expectError(.usage("Option '--timeout' requires a positive number of seconds.")) {
+            _ = try parser.parse([
+                "secret", "run", "--keychain", "k", "--service", "svc", "--account", "acct", "--env", "X",
+                "--timeout", "0", "--", "python"
+            ])
+        }
+
+        expectError(.usage("Option '--timeout' requires a positive number of seconds.")) {
+            _ = try parser.parse([
+                "secret", "run", "--keychain", "k", "--service", "svc", "--account", "acct", "--env", "X",
+                "--timeout", "abc", "--", "python"
+            ])
+        }
+
+        expectError(.usage("Option '--timeout' requires a positive number of seconds.")) {
+            _ = try parser.parse([
+                "secret", "run", "--keychain", "k", "--service", "svc", "--account", "acct", "--env", "X",
+                "--timeout", "inf", "--", "python"
             ])
         }
     }

@@ -69,7 +69,8 @@ struct SystemRuntimeDependenciesTests {
             executable: "/bin/cat",
             arguments: [],
             standardInput: Data("runtime-payload".utf8),
-            timeout: 2
+            timeout: 2,
+            environment: nil
         )
 
         #expect(result.exitCode == 0)
@@ -85,7 +86,8 @@ struct SystemRuntimeDependenciesTests {
             executable: "/bin/sh",
             arguments: ["-c", "if read -r _; then printf has-data; else printf eof; fi"],
             standardInput: nil,
-            timeout: 2
+            timeout: 2,
+            environment: nil
         )
 
         #expect(result.exitCode == 0)
@@ -104,7 +106,8 @@ struct SystemRuntimeDependenciesTests {
                 executable: "/bin/sh",
                 arguments: ["-c", "sleep 5"],
                 standardInput: payload,
-                timeout: timeout
+                timeout: timeout,
+                environment: nil
             )
             Issue.record("Expected timeout failure")
         } catch {
@@ -133,7 +136,8 @@ struct SystemRuntimeDependenciesTests {
                 executable: "/usr/bin/true",
                 arguments: [],
                 standardInput: payload,
-                timeout: 2
+                timeout: 2,
+                environment: nil
             )
             Issue.record("Expected stdin write failure")
         } catch {

@@ -106,6 +106,8 @@ public struct CommandParser {
         switch subcommand {
         case "set":
             return try parseSecretSet(tail)
+        case "run":
+            return try parseSecretRun(tail)
         case "get":
             return try parseSecretGet(tail)
         case "remove":
@@ -137,6 +139,44 @@ public struct CommandParser {
         }
 
         return .secretSet(keychain: keychain, service: service, account: account, input: .stdin)
+    }
+
+    private func parseSecretRun(_ arguments: [String]) throws -> Command {
+        guard let separatorIndex = arguments.firstIndex(of: "--") else {
+            throw UFOError.usage("'secret run' requires '-- <command> [args...]'.")
+        }
+
+        let optionTokens = Array(arguments[..<separatorIndex])
+        let commandTokens = Array(arguments.dropFirst(separatorIndex + 1))
+        guard let executable = commandTokens.first, !executable.isEmpty else {
+            throw UFOError.usage("'secret run' requires a command after '--'.")
+        }
+
+        let options = try parseOptions(
+            optionTokens,
+            valueOptions: ["--keychain", "--service", "--account", "--env", "--timeout"],
+            flagOptions: []
+        )
+
+        let timeout: TimeInterval?
+        if let timeoutValue = options.values["--timeout"] {
+            guard let parsed = TimeInterval(timeoutValue), parsed.isFinite, parsed > 0 else {
+                throw UFOError.usage("Option '--timeout' requires a positive number of seconds.")
+            }
+            timeout = parsed
+        } else {
+            timeout = nil
+        }
+
+        return .secretRun(
+            keychain: try requiredOption("--keychain", from: options.values),
+            service: try requiredOption("--service", from: options.values),
+            account: try requiredOption("--account", from: options.values),
+            environmentVariable: try requiredOption("--env", from: options.values),
+            executable: executable,
+            arguments: Array(commandTokens.dropFirst()),
+            timeout: timeout
+        )
     }
 
     private func parseSecretGet(_ arguments: [String]) throws -> Command {

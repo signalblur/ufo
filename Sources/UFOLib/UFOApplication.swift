@@ -1,12 +1,15 @@
 import Foundation
 
 public final class UFOApplication {
+    private static let defaultSecretRunTimeout: TimeInterval = 300
+
     private let parser: CommandParser
     private let fileSystem: FileSysteming
     private let inputReader: InputReading
     private let policy: KeychainProtectionPolicy
     private let registryStore: ManagedRegistryStore
     private let securityCLI: SecurityCLI
+    private let processRunner: ProcessRunning
     private let auditLogger: AuditLogger
 
     public init(
@@ -16,6 +19,7 @@ public final class UFOApplication {
         policy: KeychainProtectionPolicy,
         registryStore: ManagedRegistryStore,
         securityCLI: SecurityCLI,
+        processRunner: ProcessRunning,
         auditLogger: AuditLogger
     ) {
         self.parser = parser
@@ -24,15 +28,17 @@ public final class UFOApplication {
         self.policy = policy
         self.registryStore = registryStore
         self.securityCLI = securityCLI
+        self.processRunner = processRunner
         self.auditLogger = auditLogger
     }
 
     public func run(arguments: [String]) -> CommandResult {
         do {
             let command = try parser.parse(arguments)
-            let output = try execute(command)
-            auditLogger.log(event: eventName(for: command), outcome: "success", metadata: metadata(for: command))
-            return CommandResult(exitCode: ExitCode.success.rawValue, standardOutput: output, standardError: "")
+            let result = try execute(command)
+            let outcome = result.exitCode == ExitCode.success.rawValue ? "success" : "failure"
+            auditLogger.log(event: eventName(for: command), outcome: outcome, metadata: metadata(for: command))
+            return result
         } catch let error as UFOError {
             auditLogger.log(
                 event: eventName(for: arguments),
@@ -59,29 +65,55 @@ public final class UFOApplication {
         }
     }
 
-    private func execute(_ command: Command) throws -> String {
+    private func execute(_ command: Command) throws -> CommandResult {
         switch command {
         case .help(let topic):
-            return HelpText.render(topic: topic)
+            return successResult(HelpText.render(topic: topic))
         case .doctor:
-            return try runDoctor()
+            return successResult(try runDoctor())
         case .keychainCreate(let name, let path):
-            return try createKeychain(name: name, directory: path)
+            return successResult(try createKeychain(name: name, directory: path))
         case .keychainHarden(let name):
-            return try hardenKeychain(name: name)
+            return successResult(try hardenKeychain(name: name))
         case .keychainList:
-            return try listKeychains()
+            return successResult(try listKeychains())
         case .keychainDelete(let name, let yes, let confirm):
-            return try deleteKeychain(name: name, yes: yes, confirm: confirm)
+            return successResult(try deleteKeychain(name: name, yes: yes, confirm: confirm))
         case .secretSet(let keychain, let service, let account, let input):
-            return try setSecret(keychain: keychain, service: service, account: account, input: input)
+            return successResult(try setSecret(keychain: keychain, service: service, account: account, input: input))
+        case .secretRun(
+            let keychain,
+            let service,
+            let account,
+            let environmentVariable,
+            let executable,
+            let arguments,
+            let timeout
+        ):
+            return try runSecretCommand(
+                keychain: keychain,
+                service: service,
+                account: account,
+                environmentVariable: environmentVariable,
+                executable: executable,
+                arguments: arguments,
+                timeout: timeout
+            )
         case .secretGet(let keychain, let service, let account, let reveal):
-            return try getSecret(keychain: keychain, service: service, account: account, reveal: reveal)
+            return successResult(try getSecret(keychain: keychain, service: service, account: account, reveal: reveal))
         case .secretRemove(let keychain, let service, let account, let yes):
-            return try removeSecret(keychain: keychain, service: service, account: account, yes: yes)
+            return successResult(try removeSecret(keychain: keychain, service: service, account: account, yes: yes))
         case .secretSearch(let keychain, let query):
-            return try searchSecrets(keychain: keychain, query: query)
+            return successResult(try searchSecrets(keychain: keychain, query: query))
         }
+    }
+
+    private func successResult(_ output: String) -> CommandResult {
+        CommandResult(
+            exitCode: ExitCode.success.rawValue,
+            standardOutput: output,
+            standardError: ""
+        )
     }
 
     private func createKeychain(name: String, directory: String?) throws -> String {
@@ -156,7 +188,7 @@ public final class UFOApplication {
         keychain: String,
         service: String,
         account: String,
-        input: SecretInput
+        input _: SecretInput
     ) throws -> String {
         try InputValidation.validateService(service)
         try InputValidation.validateAccount(account)
@@ -201,6 +233,48 @@ public final class UFOApplication {
             keychainPath: managed.path,
             service: service,
             account: account
+        )
+    }
+
+    private func runSecretCommand(
+        keychain: String,
+        service: String,
+        account: String,
+        environmentVariable: String,
+        executable: String,
+        arguments: [String],
+        timeout: TimeInterval?
+    ) throws -> CommandResult {
+        try InputValidation.validateService(service)
+        try InputValidation.validateAccount(account)
+        try InputValidation.validateEnvironmentVariableName(environmentVariable)
+
+        let managed = try requireManagedKeychain(named: keychain)
+        try policy.assertNameAllowed(managed.name)
+        try policy.assertPathAllowed(managed.path)
+
+        let secret = try securityCLI.getSecret(
+            keychainPath: managed.path,
+            service: service,
+            account: account
+        )
+
+        var environment = ProcessInfo.processInfo.environment
+        environment[environmentVariable] = secret
+
+        let effectiveTimeout = timeout ?? Self.defaultSecretRunTimeout
+        let result = try processRunner.run(
+            executable: "/usr/bin/env",
+            arguments: ["--", executable] + arguments,
+            standardInput: nil,
+            timeout: effectiveTimeout,
+            environment: environment
+        )
+
+        return CommandResult(
+            exitCode: result.exitCode,
+            standardOutput: String(decoding: result.standardOutput, as: UTF8.self),
+            standardError: String(decoding: result.standardError, as: UTF8.self)
         )
     }
 
@@ -311,6 +385,8 @@ public final class UFOApplication {
             return "keychain.delete"
         case .secretSet:
             return "secret.set"
+        case .secretRun:
+            return "secret.run"
         case .secretGet:
             return "secret.get"
         case .secretRemove:
@@ -348,6 +424,24 @@ public final class UFOApplication {
                 "service": service,
                 "account": account,
                 "source": "stdin"
+            ]
+        case .secretRun(
+            let keychain,
+            let service,
+            let account,
+            let environmentVariable,
+            let executable,
+            _,
+            let timeout
+        ):
+            let timeoutSeconds = timeout ?? Self.defaultSecretRunTimeout
+            return [
+                "keychain": keychain,
+                "service": service,
+                "account": account,
+                "env": environmentVariable,
+                "command": executable,
+                "timeout": String(timeoutSeconds)
             ]
         case .secretGet(let keychain, let service, let account, _):
             return [

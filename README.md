@@ -46,6 +46,7 @@ ufo keychain harden <name>
 ufo keychain list
 ufo keychain delete <name> --yes --confirm <name>
 ufo secret set --keychain <name> --service <svc> --account <acct> --stdin
+ufo secret run --keychain <name> --service <svc> --account <acct> --env <VAR> [--timeout <sec>] -- <cmd> [args...]
 ufo secret get --keychain <name> --service <svc> --account <acct> --reveal
 ufo secret remove --keychain <name> --service <svc> --account <acct> --yes
 ufo secret search --keychain <name> --query <q>
@@ -59,10 +60,27 @@ ufo help [command]
 - Protected keychains and protected keychain locations are denied.
 - Deletion is high-friction and requires both `--yes` and exact `--confirm <name>`.
 - Secret insertion is stdin-only to avoid argv secret exposure, stdin bytes are stored verbatim, and stdin is limited to 16384 bytes.
+- Secret script execution injects resolved secrets through process environment variables, not argv.
 - Secret retrieval requires explicit `--reveal`.
 - Secret retrieval removes exactly one transport newline from `security` output and preserves payload newlines.
 - Search returns metadata only (service/account), never secret values.
 - `security` subprocess calls enforce timeouts and force cleanup if a subprocess hangs.
+
+## Run scripts with injected secrets
+
+`secret run` resolves a managed secret and injects it into a child process environment variable without placing the secret on argv.
+Child stdout/stderr and exit code are passed through.
+
+For safety, process-control variables like `PATH`, `DYLD_*`, and `LD_*` are blocked for `--env`.
+
+```bash
+ufo secret run \
+  --keychain team-api \
+  --service openai \
+  --account ci \
+  --env OPENAI_API_KEY \
+  -- python script.py
+```
 
 ## Logging
 

@@ -69,6 +69,15 @@ public enum Command: Equatable {
     case keychainList
     case keychainDelete(name: String, yes: Bool, confirm: String?)
     case secretSet(keychain: String, service: String, account: String, input: SecretInput)
+    case secretRun(
+        keychain: String,
+        service: String,
+        account: String,
+        environmentVariable: String,
+        executable: String,
+        arguments: [String],
+        timeout: TimeInterval?
+    )
     case secretGet(keychain: String, service: String, account: String, reveal: Bool)
     case secretRemove(keychain: String, service: String, account: String, yes: Bool)
     case secretSearch(keychain: String, query: String)

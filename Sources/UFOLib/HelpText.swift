@@ -23,6 +23,8 @@ public enum HelpText {
             return secretHelp
         case "secret set":
             return secretSetHelp
+        case "secret run":
+            return secretRunHelp
         case "secret get":
             return secretGetHelp
         case "secret remove":
@@ -50,6 +52,7 @@ public enum HelpText {
       keychain list
       keychain delete <name> --yes --confirm <name>
       secret set --keychain <name> --service <svc> --account <acct> --stdin
+      secret run --keychain <name> --service <svc> --account <acct> --env <VAR> [--timeout <sec>] -- <cmd> [args...]
       secret get --keychain <name> --service <svc> --account <acct> --reveal
       secret remove --keychain <name> --service <svc> --account <acct> --yes
       secret search --keychain <name> --query <q>
@@ -60,11 +63,13 @@ public enum HelpText {
       - Mutating commands are limited to UFO-managed keychains.
       - Protected keychains (login, iCloud, System, Local Items) are blocked.
       - Secrets are never written to logs.
+      - secret run injects secrets into child process environment variables.
       - security subprocesses use bounded timeouts with forced cleanup on hangs.
 
     Examples:
       ufo keychain create team-api
       ufo secret set --keychain team-api --service github --account ci --stdin
+      ufo secret run --keychain team-api --service openai --account ci --env OPENAI_API_KEY -- python script.py
       ufo secret get --keychain team-api --service github --account ci --reveal
       ufo help secret set
     """
@@ -115,6 +120,7 @@ public enum HelpText {
 
     Subcommands:
       set     Store or update a secret.
+      run     Run a command with a secret injected as an env var.
       get     Reveal a secret (requires --reveal).
       remove  Delete a secret (requires --yes).
       search  Search stored metadata only.
@@ -127,6 +133,19 @@ public enum HelpText {
     Store or update a generic password item in a managed keychain.
     Standard input is stored verbatim; use printf to avoid an accidental trailing newline.
     Standard input is limited to 16384 bytes.
+    """
+
+    private static let secretRunHelp = """
+    Usage:
+      ufo secret run --keychain <name> --service <svc> --account <acct> --env <VAR> [--timeout <sec>] -- <cmd> [args...]
+
+    Resolve a secret from a managed keychain and run a child command with that
+    secret injected into environment variable <VAR>.
+    Child stdout, stderr, and exit code are returned directly.
+
+    Examples:
+      ufo secret run --keychain team-api --service openai --account ci --env OPENAI_API_KEY -- python script.py
+      ufo secret run --keychain team-api --service github --account ci --env GITHUB_TOKEN --timeout 30 -- /bin/sh -c 'printf "%s" "$GITHUB_TOKEN" | wc -c'
     """
 
     private static let secretGetHelp = """

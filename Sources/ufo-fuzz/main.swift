@@ -71,6 +71,7 @@ private func runParserAndValidationFuzz(payload: Data) {
     let confirm = field(5, fallback: "team")
     let value = field(6, fallback: "token")
     let topic = field(7, fallback: "secret set")
+    let envVar = field(8, fallback: "TOKEN")
 
     let parser = CommandParser()
     let candidates: [[String]] = [
@@ -83,6 +84,10 @@ private func runParserAndValidationFuzz(payload: Data) {
         ["secret", "set", "--keychain", keychain, "--service", service, "--account", account, "--value", value],
         ["secret", "set", "--keychain", keychain, "--service", service, "--account", account, "--stdin"],
         ["secret", "set", "--keychain", keychain, "--service", service, "--account", account, "--stdin", "--value", value],
+        [
+            "secret", "run", "--keychain", keychain, "--service", service, "--account", account,
+            "--env", envVar, "--", "python3", "script.py"
+        ],
         ["secret", "get", "--keychain", keychain, "--service", service, "--account", account, "--reveal"],
         ["secret", "remove", "--keychain", keychain, "--service", service, "--account", account, "--yes"],
         ["secret", "search", "--keychain", keychain, "--query", query]

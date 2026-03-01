@@ -68,6 +68,45 @@ struct InputValidationTests {
         }
     }
 
+    @Test("Validates environment variable names")
+    func validateEnvironmentVariableNames() {
+        do {
+            try InputValidation.validateEnvironmentVariableName("OPENAI_API_KEY")
+            try InputValidation.validateEnvironmentVariableName("_TOKEN1")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        expectValidationError("Environment variable name cannot be empty.") {
+            try InputValidation.validateEnvironmentVariableName("")
+        }
+
+        let longName = String(repeating: "A", count: 129)
+        expectValidationError("Environment variable name must be 128 characters or fewer.") {
+            try InputValidation.validateEnvironmentVariableName(longName)
+        }
+
+        expectValidationError(
+            "Environment variable name must start with a letter or underscore and contain only letters, numbers, or underscores."
+        ) {
+            try InputValidation.validateEnvironmentVariableName("9BAD")
+        }
+
+        expectValidationError(
+            "Environment variable name must start with a letter or underscore and contain only letters, numbers, or underscores."
+        ) {
+            try InputValidation.validateEnvironmentVariableName("BAD-NAME")
+        }
+
+        expectValidationError("Environment variable 'PATH' is blocked for safety. Use an app-specific variable name.") {
+            try InputValidation.validateEnvironmentVariableName("PATH")
+        }
+
+        expectValidationError("Environment variable 'DYLD_TEST' is blocked for safety. Use an app-specific variable name.") {
+            try InputValidation.validateEnvironmentVariableName("DYLD_TEST")
+        }
+    }
+
     @Test("Generates keychain filename suffix")
     func keychainFilenameSuffix() {
         #expect(KeychainPath.filename(for: "alpha") == "alpha.keychain-db")
