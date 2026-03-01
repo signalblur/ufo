@@ -1,5 +1,8 @@
 # ufo
 
+[![CI and Release](https://github.com/signalblur/ufo/actions/workflows/ci-release.yml/badge.svg)](https://github.com/signalblur/ufo/actions/workflows/ci-release.yml)
+[![UFOLib Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/signalblur/ufo/badges/.github/badges/coverage.json)](https://github.com/signalblur/ufo/actions/workflows/ci-release.yml)
+
 Minimal macOS CLI for managed local Keychain secrets.
 
 `ufo` manages only UFO-registered keychains and blocks protected system/user keychains.
@@ -22,6 +25,11 @@ bash Scripts/check-runtime-deps.sh
 `Scripts/check-runtime-deps.sh` verifies the release binary links only Apple system libraries.
 
 ## CI and releases
+
+Coverage/test status note:
+
+- The CI badge is pass/fail for the full pipeline (build, tests, coverage gate, runtime dependency gate).
+- The coverage badge is updated on each successful push to `main` from data in `Scripts/coverage.sh`.
 
 - GitHub Actions workflow: `.github/workflows/ci-release.yml`
 - On every push to `main`, CI runs (`swift build`, `swift test --parallel`, coverage gate, runtime dependency gate).
@@ -51,6 +59,7 @@ The harness exercises parser, input validation, and keychain protection policy a
 ufo keychain create <name> [--path <dir>]
 ufo keychain harden <name>
 ufo keychain list
+ufo keychain inventory [--user <name>]
 ufo keychain delete <name> --yes --confirm <name>
 ufo secret set --keychain <name> --service <svc> --account <acct> --stdin
 ufo secret run --keychain <name> --service <svc> --account <acct> --env <VAR> [--timeout <sec>] -- <cmd> [args...]
@@ -61,6 +70,10 @@ ufo secret search --keychain <name> --query <q>
 ufo doctor
 ufo help [command]
 ```
+
+Global option:
+
+- `--trace` prints local troubleshooting details to stdout (secrets stay redacted).
 
 ## Safety model
 
@@ -74,6 +87,28 @@ ufo help [command]
 - Secret retrieval removes exactly one transport newline from `security` output and preserves payload newlines.
 - Search returns metadata only (service/account), never secret values.
 - `security` subprocess calls enforce timeouts and force cleanup if a subprocess hangs.
+
+## Keychain inventory
+
+Use `keychain inventory` to inspect the active macOS keychain search list and attach UFO metadata:
+
+```bash
+ufo keychain inventory
+```
+
+Defaults explained in output:
+
+- Without `--user`, UFO queries the current macOS user.
+- Managed status and secret-count metadata come from `~/.ufo/registry.json`.
+- `status=pending` means managed but not hardened yet.
+
+Optional user targeting:
+
+```bash
+ufo keychain inventory --user alice
+```
+
+This uses `sudo -n` non-interactively to query another user's keychain list.
 
 ## Run scripts with injected secrets
 

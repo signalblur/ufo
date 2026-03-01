@@ -67,6 +67,7 @@ public enum Command: Equatable {
     case keychainCreate(name: String, path: String?)
     case keychainHarden(name: String)
     case keychainList
+    case keychainInventory(user: String?)
     case keychainDelete(name: String, yes: Bool, confirm: String?)
     case secretSet(keychain: String, service: String, account: String, input: SecretInput)
     case secretRun(

@@ -27,6 +27,12 @@ struct CommandParserTests {
     func parseKeychainCreate() throws {
         let command = try parser.parse(["keychain", "create", "team", "--path", "/tmp/k"])
         #expect(command == .keychainCreate(name: "team", path: "/tmp/k"))
+
+        let inventoryDefault = try parser.parse(["keychain", "inventory"])
+        #expect(inventoryDefault == .keychainInventory(user: nil))
+
+        let inventoryUser = try parser.parse(["keychain", "inventory", "--user", "alice"])
+        #expect(inventoryUser == .keychainInventory(user: "alice"))
     }
 
     @Test("Rejects malformed keychain create/harden")
@@ -48,6 +54,10 @@ struct CommandParserTests {
 
         expectError(.usage("'keychain delete' requires <name>.")) {
             _ = try parser.parse(["keychain", "delete"])
+        }
+
+        expectError(.usage("Unexpected positional argument 'extra'.")) {
+            _ = try parser.parse(["keychain", "inventory", "extra"])
         }
     }
 
@@ -216,6 +226,14 @@ struct CommandParserTests {
 
         expectError(.usage("Shortcut run requires a command. Example: 'ufo --env OPENAI_API_KEY python script.py'.")) {
             _ = try parser.parse(["--env", "OPENAI_API_KEY"])
+        }
+
+        expectError(.usage("Option '--env' requires a value.")) {
+            _ = try parser.parse(["--env"])
+        }
+
+        expectError(.usage("Option '--env' requires a value.")) {
+            _ = try parser.parse(["--env", "--keychain", "k", "python"])
         }
 
         expectError(.usage("Option '--timeout' requires a positive number of seconds.")) {

@@ -46,6 +46,104 @@ jobs:
       - name: Enforce runtime dependency gate
         run: bash Scripts/check-runtime-deps.sh
 
+  coverage-badge:
+    name: Update coverage badge
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: ci
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify arm64 runner
+        run: |
+          set -euo pipefail
+          if [[ "$(uname -m)" != "arm64" ]]; then
+            echo "Expected arm64 runner; got $(uname -m)."
+            exit 1
+          fi
+
+      - name: Generate coverage badge JSON
+        run: |
+          set -euo pipefail
+          bash Scripts/coverage.sh
+
+          CODECOV_PATH="$(swift test --show-codecov-path)"
+          python3 - "$CODECOV_PATH" "$RUNNER_TEMP/coverage-badge.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          codecov_path = pathlib.Path(sys.argv[1])
+          output_path = pathlib.Path(sys.argv[2])
+          payload = json.loads(codecov_path.read_text(encoding="utf-8"))
+
+          covered = 0
+          count = 0
+          for item in payload["data"][0]["files"]:
+              if "/Sources/UFOLib/" not in item["filename"]:
+                  continue
+              summary = item.get("summary", {}).get("lines", {})
+              covered += int(summary.get("covered", 0))
+              count += int(summary.get("count", 0))
+
+          percentage = 0.0 if count == 0 else (covered / count) * 100.0
+          if percentage >= 100.0:
+              color = "brightgreen"
+          elif percentage >= 95.0:
+              color = "green"
+          elif percentage >= 90.0:
+              color = "yellowgreen"
+          elif percentage >= 80.0:
+              color = "yellow"
+          elif percentage >= 70.0:
+              color = "orange"
+          else:
+              color = "red"
+
+          badge = {
+              "schemaVersion": 1,
+              "label": "UFOLib coverage",
+              "message": f"{percentage:.2f}%",
+              "color": color,
+          }
+          output_path.write_text(json.dumps(badge, separators=(",", ":")) + "\n", encoding="utf-8")
+          PY
+
+      - name: Publish coverage badge branch
+        run: |
+          set -euo pipefail
+
+          BADGE_BRANCH="badges"
+          BADGE_FILE=".github/badges/coverage.json"
+          TMP_BADGE="$RUNNER_TEMP/coverage-badge.json"
+
+          git fetch origin "$BADGE_BRANCH" || true
+
+          if git show-ref --verify --quiet "refs/remotes/origin/$BADGE_BRANCH"; then
+            git checkout -B "$BADGE_BRANCH" "origin/$BADGE_BRANCH"
+          else
+            git checkout --orphan "$BADGE_BRANCH"
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+
+          mkdir -p "$(dirname "$BADGE_FILE")"
+          cp "$TMP_BADGE" "$BADGE_FILE"
+
+          git add "$BADGE_FILE"
+          if git diff --cached --quiet; then
+            echo "Coverage badge unchanged; nothing to commit."
+            exit 0
+          fi
+
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "Update coverage badge for $GITHUB_SHA"
+          git push origin "$BADGE_BRANCH"
+
   release:
     name: Release macOS arm64 tarball
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

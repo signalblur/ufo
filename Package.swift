@@ -12,7 +12,7 @@ let package = Package(
         .executable(name: "ufo-fuzz", targets: ["ufo-fuzz"])
     ],
     dependencies: [
-        .package(url: "https://github.com/swiftlang/swift-testing.git", exact: "0.99.0")
+        .package(url: "https://github.com/swiftlang/swift-testing.git", exact: "0.10.0")
     ],
     targets: [
         .target(

@@ -117,6 +117,8 @@ public struct CommandParser {
             return try parseKeychainHarden(tail)
         case "list":
             return try parseKeychainList(tail)
+        case "inventory":
+            return try parseKeychainInventory(tail)
         case "delete":
             return try parseKeychainDelete(tail)
         default:
@@ -145,6 +147,11 @@ public struct CommandParser {
             throw UFOError.usage("'keychain list' does not accept arguments.")
         }
         return .keychainList
+    }
+
+    private func parseKeychainInventory(_ arguments: [String]) throws -> Command {
+        let options = try parseOptions(arguments, valueOptions: ["--user"], flagOptions: [])
+        return .keychainInventory(user: options.values["--user"])
     }
 
     private func parseKeychainDelete(_ arguments: [String]) throws -> Command {

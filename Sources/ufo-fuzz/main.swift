@@ -80,6 +80,8 @@ private func runParserAndValidationFuzz(payload: Data) {
         ["doctor"],
         ["keychain", "create", keychain, "--path", path],
         ["keychain", "harden", keychain],
+        ["keychain", "inventory"],
+        ["keychain", "inventory", "--user", account],
         ["keychain", "delete", keychain, "--yes", "--confirm", confirm],
         ["secret", "set", "--keychain", keychain, "--service", service, "--account", account, "--value", value],
         ["secret", "set", "--keychain", keychain, "--service", service, "--account", account, "--stdin"],

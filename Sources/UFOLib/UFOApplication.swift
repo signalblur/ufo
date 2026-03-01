@@ -3,6 +3,47 @@ import Foundation
 public final class UFOApplication {
     private static let defaultSecretRunTimeout: TimeInterval = 300
 
+    private struct GlobalExecutionOptions {
+        let arguments: [String]
+        let traceEnabled: Bool
+    }
+
+    private final class TraceCollector {
+        private let enabled: Bool
+        private var lines: [String]
+        private let formatter: ISO8601DateFormatter
+
+        init(enabled: Bool) {
+            self.enabled = enabled
+            self.lines = []
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            self.formatter = formatter
+        }
+
+        func log(_ message: String) {
+            guard enabled else {
+                return
+            }
+
+            let timestamp = formatter.string(from: Date())
+            lines.append("[trace \(timestamp)] \(message)")
+        }
+
+        func prepend(to output: String) -> String {
+            guard enabled, !lines.isEmpty else {
+                return output
+            }
+
+            let traceOutput = lines.joined(separator: "\n")
+            guard !output.isEmpty else {
+                return traceOutput
+            }
+
+            return "\(traceOutput)\n\(output)"
+        }
+    }
+
     private let parser: CommandParser
     private let fileSystem: FileSysteming
     private let inputReader: InputReading
@@ -33,39 +74,56 @@ public final class UFOApplication {
     }
 
     public func run(arguments: [String]) -> CommandResult {
+        var effectiveArguments = arguments
+        var trace = TraceCollector(enabled: false)
+
         do {
-            let command = try parser.parse(arguments)
-            let result = try execute(command)
+            let globalOptions = try parseGlobalExecutionOptions(arguments)
+            effectiveArguments = globalOptions.arguments
+            trace = TraceCollector(enabled: globalOptions.traceEnabled)
+
+            trace.log("raw args=\(effectiveArguments)")
+            let command = try parser.parse(effectiveArguments)
+            trace.log("command=\(eventName(for: command)) args=\(effectiveArguments)")
+
+            let result = try execute(command, trace: trace)
             let outcome = result.exitCode == ExitCode.success.rawValue ? "success" : "failure"
             auditLogger.log(event: eventName(for: command), outcome: outcome, metadata: metadata(for: command))
-            return result
+
+            return CommandResult(
+                exitCode: result.exitCode,
+                standardOutput: trace.prepend(to: result.standardOutput),
+                standardError: result.standardError
+            )
         } catch let error as UFOError {
+            let eventArguments = effectiveArguments.isEmpty ? ["help"] : effectiveArguments
             auditLogger.log(
-                event: eventName(for: arguments),
+                event: eventName(for: eventArguments),
                 outcome: "failure",
                 metadata: ["error": error.message]
             )
             return CommandResult(
                 exitCode: error.exitCode.rawValue,
-                standardOutput: "",
+                standardOutput: trace.prepend(to: ""),
                 standardError: error.message
             )
         } catch {
             let wrapped = UFOError.internalError(error.localizedDescription)
+            let eventArguments = effectiveArguments.isEmpty ? ["help"] : effectiveArguments
             auditLogger.log(
-                event: eventName(for: arguments),
+                event: eventName(for: eventArguments),
                 outcome: "failure",
                 metadata: ["error": wrapped.message]
             )
             return CommandResult(
                 exitCode: wrapped.exitCode.rawValue,
-                standardOutput: "",
+                standardOutput: trace.prepend(to: ""),
                 standardError: wrapped.message
             )
         }
     }
 
-    private func execute(_ command: Command) throws -> CommandResult {
+    private func execute(_ command: Command, trace: TraceCollector) throws -> CommandResult {
         switch command {
         case .help(let topic):
             return successResult(HelpText.render(topic: topic))
@@ -77,6 +135,8 @@ public final class UFOApplication {
             return successResult(try hardenKeychain(name: name))
         case .keychainList:
             return successResult(try listKeychains())
+        case .keychainInventory(let user):
+            return successResult(try listUserKeychainInventory(user: user, trace: trace))
         case .keychainDelete(let name, let yes, let confirm):
             return successResult(try deleteKeychain(name: name, yes: yes, confirm: confirm))
         case .secretSet(let keychain, let service, let account, let input):
@@ -97,7 +157,8 @@ public final class UFOApplication {
                 environmentVariable: environmentVariable,
                 executable: executable,
                 arguments: arguments,
-                timeout: timeout
+                timeout: timeout,
+                trace: trace
             )
         case .secretRunShortcut(
             let keychain,
@@ -115,7 +176,8 @@ public final class UFOApplication {
                 environmentVariable: environmentVariable,
                 executable: executable,
                 arguments: arguments,
-                timeout: timeout
+                timeout: timeout,
+                trace: trace
             )
         case .secretGet(let keychain, let service, let account, let reveal):
             return successResult(try getSecret(keychain: keychain, service: service, account: account, reveal: reveal))
@@ -132,6 +194,135 @@ public final class UFOApplication {
             standardOutput: output,
             standardError: ""
         )
+    }
+
+    private func parseGlobalExecutionOptions(_ arguments: [String]) throws -> GlobalExecutionOptions {
+        var remaining = arguments
+        var traceEnabled = false
+
+        while let first = remaining.first, first == "--trace" {
+            guard !traceEnabled else {
+                throw UFOError.usage("Option '--trace' was provided multiple times.")
+            }
+            traceEnabled = true
+            remaining.removeFirst()
+        }
+
+        return GlobalExecutionOptions(arguments: remaining, traceEnabled: traceEnabled)
+    }
+
+    private func listUserKeychainInventory(user: String?, trace: TraceCollector) throws -> String {
+        let currentUser = NSUserName()
+        let requestedUser = user?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let requestedUser {
+            try validateUserName(requestedUser)
+        }
+
+        let targetUser = requestedUser ?? currentUser
+        let useSudo = requestedUser != nil && requestedUser != currentUser
+
+        let executable: String
+        let arguments: [String]
+        if useSudo {
+            executable = "/usr/bin/sudo"
+            arguments = ["-n", "-u", targetUser, SecurityCLI.executablePath, "list-keychains", "-d", "user"]
+        } else {
+            executable = SecurityCLI.executablePath
+            arguments = ["list-keychains", "-d", "user"]
+        }
+
+        trace.log("keychain inventory query_user=\(targetUser) mode=\(useSudo ? "sudo -n" : "current-user")")
+
+        let result = try processRunner.run(
+            executable: executable,
+            arguments: arguments,
+            standardInput: nil,
+            timeout: SecurityCLI.defaultSubprocessTimeout,
+            environment: nil
+        )
+
+        guard result.exitCode == 0 else {
+            let stderr = String(decoding: result.standardError, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let detail = stderr.isEmpty ? "exit code \(result.exitCode)" : stderr
+            throw UFOError.subprocess("Failed listing keychains for user '\(targetUser)': \(detail)")
+        }
+
+        let visibleKeychains = parseKeychainPaths(from: result.standardOutput)
+        let managedKeychains = try registryStore.listKeychains()
+        let managedByPath = Dictionary(uniqueKeysWithValues: managedKeychains.map {
+            (fileSystem.canonicalPath($0.path), $0)
+        })
+
+        let dateFormatter = ISO8601DateFormatter()
+        dateFormatter.formatOptions = [.withInternetDateTime]
+
+        var lines: [String] = []
+        lines.append("Keychain inventory")
+        lines.append(
+            "Defaults: --user is optional. Without it, UFO uses the current macOS user and 'security list-keychains -d user'."
+        )
+        lines.append("Defaults: 'managed/status/secrets' metadata comes from \(registryStore.registryPath).")
+        lines.append(
+            "Context: user=\(targetUser) mode=\(useSudo ? "sudo -n (non-interactive)" : "current-user")"
+        )
+
+        guard !visibleKeychains.isEmpty else {
+            lines.append("No keychains were returned for this user search list.")
+            return lines.joined(separator: "\n")
+        }
+
+        lines.append("path\tmanaged\tmanaged_name\tstatus\tsecrets\texists\tmodified_at")
+        for path in visibleKeychains {
+            let canonicalPath = fileSystem.canonicalPath(path)
+            let managed = managedByPath[canonicalPath]
+
+            let managedFlag = managed == nil ? "no" : "yes"
+            let managedName = managed?.name ?? "-"
+            let status = managed == nil ? "-" : (managed?.hardenedAt == nil ? "pending" : "hardened")
+            let secrets = managed.map { String($0.secrets.count) } ?? "-"
+            let exists = fileSystem.fileExists(at: canonicalPath)
+            let modifiedAt: String
+            if exists, let date = try? fileSystem.modificationDate(at: canonicalPath) {
+                modifiedAt = dateFormatter.string(from: date)
+            } else {
+                modifiedAt = "-"
+            }
+
+            lines.append(
+                "\(canonicalPath)\t\(managedFlag)\t\(managedName)\t\(status)\t\(secrets)\t\(exists ? "yes" : "no")\t\(modifiedAt)"
+            )
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func parseKeychainPaths(from output: Data) -> [String] {
+        String(decoding: output, as: UTF8.self)
+            .split(whereSeparator: \.isNewline)
+            .map { line in
+                var value = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+                if value.hasPrefix("\"") && value.hasSuffix("\"") && value.count >= 2 {
+                    value.removeFirst()
+                    value.removeLast()
+                }
+                return value
+            }
+            .filter { !$0.isEmpty }
+    }
+
+    private func validateUserName(_ value: String) throws {
+        guard !value.isEmpty else {
+            throw UFOError.validation("User name cannot be empty.")
+        }
+
+        let regex = try NSRegularExpression(pattern: "^[A-Za-z_][A-Za-z0-9._-]{0,127}$")
+        let range = NSRange(location: 0, length: value.utf16.count)
+        guard regex.firstMatch(in: value, options: [], range: range) != nil else {
+            throw UFOError.validation(
+                "User name must start with a letter or underscore and contain only letters, numbers, '.', '_', or '-'."
+            )
+        }
     }
 
     private func createKeychain(name: String, directory: String?) throws -> String {
@@ -261,7 +452,8 @@ public final class UFOApplication {
         environmentVariable: String,
         executable: String,
         arguments: [String],
-        timeout: TimeInterval?
+        timeout: TimeInterval?,
+        trace: TraceCollector
     ) throws -> CommandResult {
         try InputValidation.validateService(service)
         try InputValidation.validateAccount(account)
@@ -271,11 +463,17 @@ public final class UFOApplication {
         try policy.assertNameAllowed(managed.name)
         try policy.assertPathAllowed(managed.path)
 
+        trace.log(
+            "secret run keychain=\(managed.name) service=\(service) account=\(account) env=\(environmentVariable) command=\(executable)"
+        )
+
         let secret = try securityCLI.getSecret(
             keychainPath: managed.path,
             service: service,
             account: account
         )
+
+        trace.log("secret source keychain_path=\(managed.path) value=<redacted>")
 
         var environment = ProcessInfo.processInfo.environment
         environment[environmentVariable] = secret
@@ -288,6 +486,8 @@ public final class UFOApplication {
             timeout: effectiveTimeout,
             environment: environment
         )
+
+        trace.log("child process exit_code=\(result.exitCode) timeout=\(effectiveTimeout)s")
 
         return CommandResult(
             exitCode: result.exitCode,
@@ -303,7 +503,8 @@ public final class UFOApplication {
         environmentVariable: String,
         executable: String,
         arguments: [String],
-        timeout: TimeInterval?
+        timeout: TimeInterval?,
+        trace: TraceCollector
     ) throws -> CommandResult {
         try InputValidation.validateEnvironmentVariableName(environmentVariable)
         if let service {
@@ -313,12 +514,17 @@ public final class UFOApplication {
             try InputValidation.validateAccount(account)
         }
 
-        let managed = try resolveManagedKeychainForShortcut(named: keychain)
+        let managed = try resolveManagedKeychainForShortcut(named: keychain, trace: trace)
         let resolved = try resolveSecretMetadataForShortcut(
             in: managed,
             environmentVariable: environmentVariable,
             service: service,
-            account: account
+            account: account,
+            trace: trace
+        )
+
+        trace.log(
+            "shortcut resolved keychain=\(managed.name) service=\(resolved.service) account=\(resolved.account) env=\(environmentVariable)"
         )
 
         return try runSecretCommand(
@@ -328,15 +534,17 @@ public final class UFOApplication {
             environmentVariable: environmentVariable,
             executable: executable,
             arguments: arguments,
-            timeout: timeout
+            timeout: timeout,
+            trace: trace
         )
     }
 
-    private func resolveManagedKeychainForShortcut(named name: String?) throws -> ManagedKeychain {
+    private func resolveManagedKeychainForShortcut(named name: String?, trace: TraceCollector) throws -> ManagedKeychain {
         if let name {
             let managed = try requireManagedKeychain(named: name)
             try policy.assertNameAllowed(managed.name)
             try policy.assertPathAllowed(managed.path)
+            trace.log("shortcut keychain selector provided keychain=\(managed.name)")
             return managed
         }
 
@@ -354,6 +562,7 @@ public final class UFOApplication {
         let managed = keychains[0]
         try policy.assertNameAllowed(managed.name)
         try policy.assertPathAllowed(managed.path)
+        trace.log("shortcut default keychain inferred keychain=\(managed.name)")
         return managed
     }
 
@@ -361,7 +570,8 @@ public final class UFOApplication {
         in managed: ManagedKeychain,
         environmentVariable: String,
         service: String?,
-        account: String?
+        account: String?,
+        trace: TraceCollector
     ) throws -> SecretMetadata {
         guard !managed.secrets.isEmpty else {
             throw UFOError.notFound(
@@ -396,6 +606,7 @@ public final class UFOApplication {
                     "Multiple secret metadata entries match in keychain '\(managed.name)'. Provide both --service and --account."
                 )
             }
+            trace.log("shortcut secret selector used explicit service/account")
             return candidates[0]
         }
 
@@ -407,6 +618,7 @@ public final class UFOApplication {
         }
 
         if envMatches.count == 1 {
+            trace.log("shortcut secret inferred from env token env=\(environmentVariable)")
             return envMatches[0]
         }
 
@@ -417,6 +629,7 @@ public final class UFOApplication {
         }
 
         if candidates.count == 1 {
+            trace.log("shortcut secret defaulted to only metadata entry")
             return candidates[0]
         }
 
@@ -553,6 +766,8 @@ public final class UFOApplication {
             return "keychain.harden"
         case .keychainList:
             return "keychain.list"
+        case .keychainInventory:
+            return "keychain.inventory"
         case .keychainDelete:
             return "keychain.delete"
         case .secretSet:
@@ -575,9 +790,7 @@ public final class UFOApplication {
     }
 
     private func eventName(for arguments: [String]) -> String {
-        guard let first = arguments.first else {
-            return "unknown"
-        }
+        let first = arguments[0]
 
         if first.hasPrefix("--") {
             return "secret.run.shortcut"
@@ -598,6 +811,8 @@ public final class UFOApplication {
             return ["keychain": name]
         case .keychainList:
             return [:]
+        case .keychainInventory(let user):
+            return ["user": user ?? "<current>"]
         case .keychainDelete(let name, _, _):
             return ["keychain": name]
         case .secretSet(let keychain, let service, let account, _):

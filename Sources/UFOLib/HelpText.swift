@@ -17,6 +17,8 @@ public enum HelpText {
             return keychainHardenHelp
         case "keychain list":
             return keychainListHelp
+        case "keychain inventory":
+            return keychainInventoryHelp
         case "keychain delete":
             return keychainDeleteHelp
         case "secret":
@@ -46,10 +48,14 @@ public enum HelpText {
     Usage:
       ufo <command> [options]
 
+    Global options:
+      --trace                        Print local troubleshooting trace to stdout (secrets redacted).
+
     Commands:
       keychain create <name> [--path <dir>]
       keychain harden <name>
       keychain list
+      keychain inventory [--user <name>]
       keychain delete <name> --yes --confirm <name>
       secret set --keychain <name> --service <svc> --account <acct> --stdin
       secret run --keychain <name> --service <svc> --account <acct> --env <VAR> [--timeout <sec>] -- <cmd> [args...]
@@ -85,6 +91,7 @@ public enum HelpText {
       create <name> [--path <dir>]   Create a managed keychain.
       harden <name>                  Apply secure keychain settings.
       list                           List managed keychains.
+      inventory [--user <name>]     List keychains in a user's macOS search list with metadata.
       delete <name> --yes --confirm <name>
                                      Delete a managed keychain.
     """
@@ -108,6 +115,18 @@ public enum HelpText {
       ufo keychain list
 
     List UFO-managed keychains and hardening status.
+    Defaults explained: status=pending means created but not hardened yet.
+    """
+
+    private static let keychainInventoryHelp = """
+    Usage:
+      ufo keychain inventory [--user <name>]
+
+    List keychains from the user's macOS keychain search list and attach UFO metadata.
+    Defaults explained:
+      - Without --user, UFO queries the current macOS user.
+      - managed/status/secrets columns come from ~/.ufo/registry.json.
+      - status=pending means managed but not hardened yet.
     """
 
     private static let keychainDeleteHelp = """

@@ -102,6 +102,109 @@ struct UFOApplicationTests {
         #expect(deleted.standardOutput.contains("Deleted managed keychain 'alpha'"))
     }
 
+    @Test("Keychain inventory lists visible keychains with metadata and defaults")
+    func keychainInventoryOutput() {
+        let fixture = makeFixture()
+        _ = fixture.app.run(arguments: ["keychain", "create", "alpha"])
+        fixture.fileSystem.writeString("managed", to: "/Users/tester/.ufo/keychains/alpha.keychain-db")
+        fixture.fileSystem.writeString("login", to: "/Users/tester/Library/Keychains/login.keychain-db")
+
+        fixture.processRunner.enqueueSuccess(standardOutput: Data(
+            "\"/Users/tester/Library/Keychains/login.keychain-db\"\n\"/Users/tester/.ufo/keychains/alpha.keychain-db\"\n".utf8
+        ))
+
+        let result = fixture.app.run(arguments: ["keychain", "inventory"])
+
+        #expect(result.exitCode == 0)
+        #expect(result.standardOutput.contains("Keychain inventory"))
+        #expect(result.standardOutput.contains("Defaults:"))
+        #expect(result.standardOutput.contains("mode=current-user"))
+        #expect(result.standardOutput.contains("/Users/tester/.ufo/keychains/alpha.keychain-db\tyes\talpha\tpending\t0\tyes"))
+        #expect(result.standardOutput.contains("/Users/tester/Library/Keychains/login.keychain-db\tno\t-\t-\t-\tyes"))
+
+        #expect(fixture.processRunner.invocations.count == 2)
+        let inventoryInvocation = fixture.processRunner.invocations[1]
+        #expect(inventoryInvocation.executable == "/usr/bin/security")
+        #expect(inventoryInvocation.arguments == ["list-keychains", "-d", "user"])
+    }
+
+    @Test("Keychain inventory can target a specific user via sudo")
+    func keychainInventorySpecificUser() {
+        let fixture = makeFixture()
+        fixture.processRunner.enqueueSuccess(standardOutput: Data("\"/Users/alice/login.keychain-db\"\n".utf8))
+
+        let result = fixture.app.run(arguments: ["keychain", "inventory", "--user", "alice"])
+        #expect(result.exitCode == 0)
+        #expect(result.standardOutput.contains("Context: user=alice mode=sudo -n"))
+
+        #expect(fixture.processRunner.invocations.count == 1)
+        let invocation = fixture.processRunner.invocations[0]
+        #expect(invocation.executable == "/usr/bin/sudo")
+        #expect(invocation.arguments == [
+            "-n", "-u", "alice", "/usr/bin/security", "list-keychains", "-d", "user"
+        ])
+    }
+
+    @Test("Keychain inventory handles empty and failing subprocess output")
+    func keychainInventoryEmptyAndFailurePaths() {
+        let emptyFixture = makeFixture()
+        emptyFixture.processRunner.enqueueSuccess(standardOutput: Data())
+        let empty = emptyFixture.app.run(arguments: ["keychain", "inventory"])
+        #expect(empty.exitCode == 0)
+        #expect(empty.standardOutput.contains("No keychains were returned"))
+
+        let stderrFixture = makeFixture()
+        stderrFixture.processRunner.enqueueSuccess(exitCode: 42, standardError: Data("permission denied".utf8))
+        let stderrFailure = stderrFixture.app.run(arguments: ["keychain", "inventory"])
+        #expect(stderrFailure.exitCode == ExitCode.subprocessFailure.rawValue)
+        #expect(stderrFailure.standardError.contains("permission denied"))
+
+        let noStderrFixture = makeFixture()
+        noStderrFixture.processRunner.enqueueSuccess(exitCode: 7, standardError: Data())
+        let noStderrFailure = noStderrFixture.app.run(arguments: ["keychain", "inventory"])
+        #expect(noStderrFailure.exitCode == ExitCode.subprocessFailure.rawValue)
+        #expect(noStderrFailure.standardError.contains("exit code 7"))
+    }
+
+    @Test("Keychain inventory includes hardened status and validates user names")
+    func keychainInventoryHardenedAndUserValidation() {
+        let fixture = makeFixture()
+        _ = fixture.app.run(arguments: ["keychain", "create", "alpha"])
+        _ = fixture.app.run(arguments: ["keychain", "harden", "alpha"])
+        fixture.fileSystem.writeString("managed", to: "/Users/tester/.ufo/keychains/alpha.keychain-db")
+        fixture.processRunner.enqueueSuccess(standardOutput: Data("\"/Users/tester/.ufo/keychains/alpha.keychain-db\"\n".utf8))
+
+        let hardened = fixture.app.run(arguments: ["keychain", "inventory"])
+        #expect(hardened.exitCode == 0)
+        #expect(hardened.standardOutput.contains("/Users/tester/.ufo/keychains/alpha.keychain-db\tyes\talpha\thardened"))
+
+        let emptyUser = fixture.app.run(arguments: ["keychain", "inventory", "--user", ""])
+        #expect(emptyUser.exitCode == ExitCode.policyDenied.rawValue)
+        #expect(emptyUser.standardError.contains("User name cannot be empty"))
+
+        let invalidUser = fixture.app.run(arguments: ["keychain", "inventory", "--user", "bad user"])
+        #expect(invalidUser.exitCode == ExitCode.policyDenied.rawValue)
+        #expect(invalidUser.standardError.contains("User name must start with a letter or underscore"))
+    }
+
+    @Test("Trace flag prints troubleshooting details to stdout")
+    func traceFlagOutput() {
+        let fixture = makeFixture()
+
+        let listResult = fixture.app.run(arguments: ["--trace", "keychain", "list"])
+        #expect(listResult.exitCode == 0)
+        #expect(listResult.standardOutput.contains("[trace"))
+        #expect(listResult.standardOutput.contains("command=keychain.list"))
+
+        let errorResult = fixture.app.run(arguments: ["--trace", "bad"])
+        #expect(errorResult.exitCode == ExitCode.usage.rawValue)
+        #expect(errorResult.standardOutput.contains("raw args=[\"bad\"]"))
+
+        let duplicateTrace = fixture.app.run(arguments: ["--trace", "--trace", "keychain", "list"])
+        #expect(duplicateTrace.exitCode == ExitCode.usage.rawValue)
+        #expect(duplicateTrace.standardError.contains("Option '--trace' was provided multiple times."))
+    }
+
     @Test("Secret set/get/remove/search workflow")
     func secretWorkflow() {
         let fixture = makeFixture()
@@ -285,6 +388,146 @@ struct UFOApplicationTests {
         #expect(childInvocation.executable == "/usr/bin/env")
         #expect(childInvocation.arguments == ["--", "python3", "script.py"])
         #expect(childInvocation.environment?["OPENAI_API_KEY"] == "runtime-secret")
+    }
+
+    @Test("Shortcut run supports explicit keychain service and account selectors")
+    func secretRunShortcutExplicitSelectors() {
+        let fixture = makeFixture()
+        _ = fixture.app.run(arguments: ["keychain", "create", "alpha"])
+        do {
+            try fixture.registryStore.upsertSecretMetadata(keychainName: "alpha", service: "openai", account: "ci")
+        } catch {
+            Issue.record("Unexpected setup error: \(error)")
+            return
+        }
+
+        fixture.processRunner.enqueueSuccess(standardOutput: Data("explicit-secret\n".utf8))
+        fixture.processRunner.enqueueSuccess(standardOutput: Data("explicit-ok".utf8))
+        let result = fixture.app.run(arguments: [
+            "--env", "OPENAI_API_KEY",
+            "--keychain", "alpha",
+            "--service", "openai",
+            "--account", "ci",
+            "python3",
+            "script.py"
+        ])
+
+        #expect(result.exitCode == 0)
+        #expect(result.standardOutput == "explicit-ok")
+        #expect(fixture.processRunner.invocations.count == 3)
+        #expect(fixture.processRunner.invocations[1].arguments == [
+            "find-generic-password", "-s", "openai", "-a", "ci", "-w", "/Users/tester/.ufo/keychains/alpha.keychain-db"
+        ])
+    }
+
+    @Test("Shortcut run handles missing keychains and missing metadata")
+    func secretRunShortcutMissingState() {
+        let noKeychainFixture = makeFixture()
+        let noKeychain = noKeychainFixture.app.run(arguments: [
+            "--env", "OPENAI_API_KEY",
+            "python3",
+            "script.py"
+        ])
+        #expect(noKeychain.exitCode == ExitCode.notFound.rawValue)
+        #expect(noKeychain.standardError.contains("No managed keychains found"))
+
+        let noMetadataFixture = makeFixture()
+        _ = noMetadataFixture.app.run(arguments: ["keychain", "create", "alpha"])
+        let noMetadata = noMetadataFixture.app.run(arguments: [
+            "--env", "OPENAI_API_KEY",
+            "python3",
+            "script.py"
+        ])
+        #expect(noMetadata.exitCode == ExitCode.notFound.rawValue)
+        #expect(noMetadata.standardError.contains("No secret metadata found"))
+    }
+
+    @Test("Shortcut run surfaces explicit selector not-found and ambiguous states")
+    func secretRunShortcutSelectorFailures() {
+        let fixture = makeFixture()
+        _ = fixture.app.run(arguments: ["keychain", "create", "alpha"])
+        do {
+            try fixture.registryStore.upsertSecretMetadata(keychainName: "alpha", service: "openai", account: "ci")
+            try fixture.registryStore.upsertSecretMetadata(keychainName: "alpha", service: "openai", account: "ops")
+        } catch {
+            Issue.record("Unexpected setup error: \(error)")
+            return
+        }
+
+        let noMatch = fixture.app.run(arguments: [
+            "--env", "OPENAI_API_KEY",
+            "--service", "github",
+            "--account", "bot",
+            "python3",
+            "script.py"
+        ])
+        #expect(noMatch.exitCode == ExitCode.notFound.rawValue)
+        #expect(noMatch.standardError.contains("No secret metadata matches service 'github' and account 'bot'"))
+
+        let multiple = fixture.app.run(arguments: [
+            "--env", "OPENAI_API_KEY",
+            "--service", "openai",
+            "python3",
+            "script.py"
+        ])
+        #expect(multiple.exitCode == ExitCode.usage.rawValue)
+        #expect(multiple.standardError.contains("Multiple secret metadata entries match"))
+
+        let multipleWithoutEnvMatch = fixture.app.run(arguments: [
+            "--env", "NOMATCH",
+            "python3",
+            "script.py"
+        ])
+        #expect(multipleWithoutEnvMatch.exitCode == ExitCode.usage.rawValue)
+        #expect(multipleWithoutEnvMatch.standardError.contains("Multiple secrets are stored in keychain"))
+    }
+
+    @Test("Shortcut run can infer from account tokens and fallback when env token is empty")
+    func secretRunShortcutAccountInferenceAndSingleFallback() {
+        let accountFixture = makeFixture()
+        _ = accountFixture.app.run(arguments: ["keychain", "create", "alpha"])
+        do {
+            try accountFixture.registryStore.upsertSecretMetadata(
+                keychainName: "alpha",
+                service: "custom-service",
+                account: "openai"
+            )
+        } catch {
+            Issue.record("Unexpected setup error: \(error)")
+            return
+        }
+
+        accountFixture.processRunner.enqueueSuccess(standardOutput: Data("inferred-secret\n".utf8))
+        accountFixture.processRunner.enqueueSuccess(standardOutput: Data("inferred-ok".utf8))
+        let inferred = accountFixture.app.run(arguments: [
+            "--env", "OPENAI_API_KEY",
+            "python3",
+            "script.py"
+        ])
+        #expect(inferred.exitCode == 0)
+        #expect(inferred.standardOutput == "inferred-ok")
+        #expect(accountFixture.processRunner.invocations[1].arguments == [
+            "find-generic-password", "-s", "custom-service", "-a", "openai", "-w", "/Users/tester/.ufo/keychains/alpha.keychain-db"
+        ])
+
+        let fallbackFixture = makeFixture()
+        _ = fallbackFixture.app.run(arguments: ["keychain", "create", "alpha"])
+        do {
+            try fallbackFixture.registryStore.upsertSecretMetadata(keychainName: "alpha", service: "github", account: "ci")
+        } catch {
+            Issue.record("Unexpected setup error: \(error)")
+            return
+        }
+
+        fallbackFixture.processRunner.enqueueSuccess(standardOutput: Data("fallback-secret\n".utf8))
+        fallbackFixture.processRunner.enqueueSuccess(standardOutput: Data("fallback-ok".utf8))
+        let fallback = fallbackFixture.app.run(arguments: [
+            "--env", "___",
+            "python3",
+            "script.py"
+        ])
+        #expect(fallback.exitCode == 0)
+        #expect(fallback.standardOutput == "fallback-ok")
     }
 
     @Test("Shortcut run requires explicit selectors for ambiguous defaults")
