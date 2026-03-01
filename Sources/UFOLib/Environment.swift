@@ -1,7 +1,12 @@
 import Foundation
 
 public protocol ProcessRunning {
-    func run(executable: String, arguments: [String], standardInput: Data?) throws -> ProcessResult
+    func run(
+        executable: String,
+        arguments: [String],
+        standardInput: Data?,
+        timeout: TimeInterval
+    ) throws -> ProcessResult
 }
 
 public protocol FileSysteming {

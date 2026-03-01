@@ -61,7 +61,6 @@ public enum UFOError: Error, Equatable {
 
 public enum SecretInput: Equatable {
     case stdin
-    case value(String)
 }
 
 public enum Command: Equatable {

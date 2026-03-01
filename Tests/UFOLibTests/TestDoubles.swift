@@ -6,6 +6,7 @@ final class FakeProcessRunner: ProcessRunning {
         let executable: String
         let arguments: [String]
         let standardInput: Data?
+        let timeout: TimeInterval
     }
 
     var invocations: [Invocation] = []
@@ -27,9 +28,19 @@ final class FakeProcessRunner: ProcessRunning {
         queuedResults.append(.failure(error))
     }
 
-    func run(executable: String, arguments: [String], standardInput: Data?) throws -> ProcessResult {
+    func run(
+        executable: String,
+        arguments: [String],
+        standardInput: Data?,
+        timeout: TimeInterval
+    ) throws -> ProcessResult {
         invocations.append(
-            Invocation(executable: executable, arguments: arguments, standardInput: standardInput)
+            Invocation(
+                executable: executable,
+                arguments: arguments,
+                standardInput: standardInput,
+                timeout: timeout
+            )
         )
 
         guard !queuedResults.isEmpty else {

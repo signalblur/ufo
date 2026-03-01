@@ -59,28 +59,29 @@ struct CommandParserTests {
         #expect(command == .keychainDelete(name: "alpha", yes: true, confirm: "alpha"))
     }
 
-    @Test("Parses secret set variants")
-    func parseSecretSetVariants() throws {
-        let byValue = try parser.parse([
-            "secret", "set", "--keychain", "k", "--service", "svc", "--account", "acct", "--value", "v"
-        ])
-        #expect(byValue == .secretSet(keychain: "k", service: "svc", account: "acct", input: .value("v")))
-
+    @Test("Parses secret set via stdin")
+    func parseSecretSetViaStdin() throws {
         let byStdin = try parser.parse([
             "secret", "set", "--keychain", "k", "--service", "svc", "--account", "acct", "--stdin"
         ])
         #expect(byStdin == .secretSet(keychain: "k", service: "svc", account: "acct", input: .stdin))
     }
 
-    @Test("Rejects bad secret set input combinations")
-    func parseSecretSetRejectsBadInputCombinations() {
-        expectError(.usage("'secret set' requires exactly one of --stdin or --value.")) {
+    @Test("Rejects insecure secret set forms")
+    func parseSecretSetRejectsInsecureForms() {
+        expectError(.usage("'secret set' requires --stdin.")) {
             _ = try parser.parse([
                 "secret", "set", "--keychain", "k", "--service", "svc", "--account", "acct"
             ])
         }
 
-        expectError(.usage("'secret set' requires exactly one of --stdin or --value.")) {
+        expectError(.usage("'secret set --value' is disabled to avoid argv secret exposure. Use --stdin.")) {
+            _ = try parser.parse([
+                "secret", "set", "--keychain", "k", "--service", "svc", "--account", "acct", "--value", "v"
+            ])
+        }
+
+        expectError(.usage("'secret set --value' is disabled to avoid argv secret exposure. Use --stdin.")) {
             _ = try parser.parse([
                 "secret", "set", "--keychain", "k", "--service", "svc", "--account", "acct", "--stdin", "--value", "v"
             ])

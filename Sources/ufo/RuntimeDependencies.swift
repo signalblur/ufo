@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import UFOLib
 
 struct SystemClock: Clock {
@@ -18,10 +19,27 @@ struct StandardInputReader: InputReading {
 }
 
 final class SystemProcessRunner: ProcessRunning {
-    func run(executable: String, arguments: [String], standardInput: Data?) throws -> ProcessResult {
+    func run(
+        executable: String,
+        arguments: [String],
+        standardInput: Data?,
+        timeout: TimeInterval
+    ) throws -> ProcessResult {
+        guard timeout > 0 else {
+            throw UFOError.subprocess("Subprocess timeout must be greater than zero seconds.")
+        }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+
+        let completion = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in
+            completion.signal()
+        }
+        defer {
+            process.terminationHandler = nil
+        }
 
         let outputPipe = Pipe()
         let errorPipe = Pipe()
@@ -43,18 +61,95 @@ final class SystemProcessRunner: ProcessRunning {
             throw UFOError.subprocess("Failed to launch subprocess at \(executable): \(error.localizedDescription)")
         }
 
-        if let payload = standardInput, let inputPipe {
-            inputPipe.fileHandleForWriting.write(payload)
-            try? inputPipe.fileHandleForWriting.close()
+        outputPipe.fileHandleForWriting.closeFile()
+        errorPipe.fileHandleForWriting.closeFile()
+
+        let readerGroup = DispatchGroup()
+        let readerQueue = DispatchQueue(label: "ufo.system-process-runner.pipe-reader", attributes: .concurrent)
+        let captureQueue = DispatchQueue(label: "ufo.system-process-runner.pipe-capture")
+        var capturedOutput = Data()
+        var capturedError = Data()
+
+        readerGroup.enter()
+        readerQueue.async {
+            let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            captureQueue.sync {
+                capturedOutput = data
+            }
+            readerGroup.leave()
         }
 
-        process.waitUntilExit()
+        readerGroup.enter()
+        readerQueue.async {
+            let data = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            captureQueue.sync {
+                capturedError = data
+            }
+            readerGroup.leave()
+        }
+
+        if let payload = standardInput, let inputPipe {
+            inputPipe.fileHandleForWriting.write(payload)
+            do {
+                try inputPipe.fileHandleForWriting.close()
+            } catch {
+                terminateAndReap(process, completion: completion)
+                awaitPipeReaders(readerGroup, outputPipe: outputPipe, errorPipe: errorPipe)
+                throw UFOError.subprocess("Failed to close subprocess stdin at \(executable): \(error.localizedDescription)")
+            }
+        }
+
+        let waitResult = completion.wait(timeout: .now() + timeout)
+        guard waitResult == .success else {
+            terminateAndReap(process, completion: completion)
+            awaitPipeReaders(readerGroup, outputPipe: outputPipe, errorPipe: errorPipe)
+            throw UFOError.subprocess(
+                "Subprocess timed out after \(formatTimeout(timeout)) seconds at \(executable)."
+            )
+        }
+
+        awaitPipeReaders(readerGroup, outputPipe: outputPipe, errorPipe: errorPipe)
+
+        let standardOutput = captureQueue.sync { capturedOutput }
+        let standardError = captureQueue.sync { capturedError }
 
         return ProcessResult(
             exitCode: process.terminationStatus,
-            standardOutput: outputPipe.fileHandleForReading.readDataToEndOfFile(),
-            standardError: errorPipe.fileHandleForReading.readDataToEndOfFile()
+            standardOutput: standardOutput,
+            standardError: standardError
         )
+    }
+
+    private func formatTimeout(_ timeout: TimeInterval) -> String {
+        if timeout.rounded() == timeout {
+            return String(Int(timeout))
+        }
+        return String(format: "%.3f", timeout)
+    }
+
+    private func terminateAndReap(_ process: Process, completion: DispatchSemaphore) {
+        if process.isRunning {
+            process.terminate()
+        }
+
+        let graceWait = completion.wait(timeout: .now() + 1)
+        guard graceWait == .timedOut, process.isRunning else {
+            return
+        }
+
+        _ = Darwin.kill(process.processIdentifier, SIGKILL)
+        _ = completion.wait(timeout: .now() + 1)
+    }
+
+    private func awaitPipeReaders(_ group: DispatchGroup, outputPipe: Pipe, errorPipe: Pipe) {
+        let waitResult = group.wait(timeout: .now() + 1)
+        guard waitResult == .timedOut else {
+            return
+        }
+
+        outputPipe.fileHandleForReading.closeFile()
+        errorPipe.fileHandleForReading.closeFile()
+        _ = group.wait(timeout: .now() + 1)
     }
 }
 

@@ -128,19 +128,15 @@ public struct CommandParser {
         let service = try requiredOption("--service", from: options.values)
         let account = try requiredOption("--account", from: options.values)
 
-        let hasStdin = options.flags.contains("--stdin")
-        let hasValue = options.values["--value"] != nil
-        if hasStdin == hasValue {
-            throw UFOError.usage("'secret set' requires exactly one of --stdin or --value.")
+        if options.values["--value"] != nil {
+            throw UFOError.usage("'secret set --value' is disabled to avoid argv secret exposure. Use --stdin.")
         }
 
-        let input: SecretInput
-        if hasStdin {
-            input = .stdin
-        } else {
-            input = .value(options.values["--value"]!)
+        guard options.flags.contains("--stdin") else {
+            throw UFOError.usage("'secret set' requires --stdin.")
         }
-        return .secretSet(keychain: keychain, service: service, account: account, input: input)
+
+        return .secretSet(keychain: keychain, service: service, account: account, input: .stdin)
     }
 
     private func parseSecretGet(_ arguments: [String]) throws -> Command {

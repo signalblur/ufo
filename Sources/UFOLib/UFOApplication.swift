@@ -165,13 +165,7 @@ public final class UFOApplication {
         try policy.assertNameAllowed(managed.name)
         try policy.assertPathAllowed(managed.path)
 
-        let rawValue: String
-        switch input {
-        case .stdin:
-            rawValue = try inputReader.readStandardInput().trimmingCharacters(in: .newlines)
-        case .value(let value):
-            rawValue = value
-        }
+        let rawValue = try inputReader.readStandardInput()
 
         try InputValidation.validateSecret(rawValue)
 
@@ -348,13 +342,12 @@ public final class UFOApplication {
             return [:]
         case .keychainDelete(let name, _, _):
             return ["keychain": name]
-        case .secretSet(let keychain, let service, let account, let input):
-            let source = input == .stdin ? "stdin" : "value"
+        case .secretSet(let keychain, let service, let account, _):
             return [
                 "keychain": keychain,
                 "service": service,
                 "account": account,
-                "source": source
+                "source": "stdin"
             ]
         case .secretGet(let keychain, let service, let account, _):
             return [

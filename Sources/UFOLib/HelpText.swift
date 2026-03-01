@@ -49,7 +49,7 @@ public enum HelpText {
       keychain harden <name>
       keychain list
       keychain delete <name> --yes --confirm <name>
-      secret set --keychain <name> --service <svc> --account <acct> (--stdin | --value <v>)
+      secret set --keychain <name> --service <svc> --account <acct> --stdin
       secret get --keychain <name> --service <svc> --account <acct> --reveal
       secret remove --keychain <name> --service <svc> --account <acct> --yes
       secret search --keychain <name> --query <q>
@@ -60,6 +60,7 @@ public enum HelpText {
       - Mutating commands are limited to UFO-managed keychains.
       - Protected keychains (login, iCloud, System, Local Items) are blocked.
       - Secrets are never written to logs.
+      - security subprocesses use bounded timeouts with forced cleanup on hangs.
 
     Examples:
       ufo keychain create team-api
@@ -121,9 +122,10 @@ public enum HelpText {
 
     private static let secretSetHelp = """
     Usage:
-      ufo secret set --keychain <name> --service <svc> --account <acct> (--stdin | --value <v>)
+      ufo secret set --keychain <name> --service <svc> --account <acct> --stdin
 
     Store or update a generic password item in a managed keychain.
+    Standard input is stored verbatim; use printf to avoid an accidental trailing newline.
     """
 
     private static let secretGetHelp = """
@@ -131,6 +133,7 @@ public enum HelpText {
       ufo secret get --keychain <name> --service <svc> --account <acct> --reveal
 
     Reads and prints plaintext secret value only when --reveal is present.
+    Exactly one transport newline is removed from security output; payload newlines are preserved.
     """
 
     private static let secretRemoveHelp = """

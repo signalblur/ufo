@@ -107,18 +107,21 @@ struct UFOApplicationTests {
         let fixture = makeFixture()
         _ = fixture.app.run(arguments: ["keychain", "create", "alpha"])
 
+        fixture.inputReader.value = "123\n"
         let setValue = fixture.app.run(arguments: [
-            "secret", "set", "--keychain", "alpha", "--service", "github", "--account", "ci", "--value", "123"
+            "secret", "set", "--keychain", "alpha", "--service", "github", "--account", "ci", "--stdin"
         ])
         #expect(setValue.exitCode == 0)
 
+        fixture.inputReader.value = "stdin-secret\n"
         let setStdin = fixture.app.run(arguments: [
             "secret", "set", "--keychain", "alpha", "--service", "apple", "--account", "ops", "--stdin"
         ])
         #expect(setStdin.exitCode == 0)
 
+        fixture.inputReader.value = "abc\n"
         let setSecondGithub = fixture.app.run(arguments: [
-            "secret", "set", "--keychain", "alpha", "--service", "github", "--account", "bot", "--value", "abc"
+            "secret", "set", "--keychain", "alpha", "--service", "github", "--account", "bot", "--stdin"
         ])
         #expect(setSecondGithub.exitCode == 0)
 
@@ -175,7 +178,7 @@ struct UFOApplicationTests {
         let fixture = makeFixture()
 
         let missingManaged = fixture.app.run(arguments: [
-            "secret", "set", "--keychain", "missing", "--service", "svc", "--account", "acct", "--value", "v"
+            "secret", "set", "--keychain", "missing", "--service", "svc", "--account", "acct", "--stdin"
         ])
         #expect(missingManaged.exitCode == ExitCode.notFound.rawValue)
 
@@ -185,7 +188,7 @@ struct UFOApplicationTests {
         ])
         #expect(emptyQuery.exitCode == ExitCode.usage.rawValue)
 
-        fixture.inputReader.value = "\n"
+        fixture.inputReader.value = ""
         let emptyStdinSecret = fixture.app.run(arguments: [
             "secret", "set", "--keychain", "alpha", "--service", "svc", "--account", "acct", "--stdin"
         ])

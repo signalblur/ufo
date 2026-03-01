@@ -17,19 +17,26 @@ struct SecurityCLITests {
         try cli.removeSecret(keychainPath: "/tmp/a.keychain-db", service: "svc", account: "acct")
 
         #expect(runner.invocations.count == 6)
-        for invocation in runner.invocations {
+        for (index, invocation) in runner.invocations.enumerated() {
             #expect(invocation.executable == "/usr/bin/security")
-            #expect(invocation.standardInput == nil)
+            #expect(invocation.timeout == SecurityCLI.defaultSubprocessTimeout)
+            if index == 3 {
+                #expect(invocation.standardInput != nil)
+            } else {
+                #expect(invocation.standardInput == nil)
+            }
         }
 
         #expect(runner.invocations[0].arguments == ["create-keychain", "-p", "", "/tmp/a.keychain-db"])
         #expect(runner.invocations[1].arguments == ["set-keychain-settings", "-lut", "300", "/tmp/a.keychain-db"])
         #expect(runner.invocations[2].arguments == ["delete-keychain", "/tmp/a.keychain-db"])
+        #expect(runner.invocations[3].arguments == ["-i"])
+        let setSecretInput = String(decoding: runner.invocations[3].standardInput ?? Data(), as: UTF8.self)
         #expect(
-            runner.invocations[3].arguments == [
-                "add-generic-password", "-U", "-s", "svc", "-a", "acct", "-w", "value", "/tmp/a.keychain-db"
-            ]
+            setSecretInput ==
+                "\"add-generic-password\" \"-U\" \"-s\" \"svc\" \"-a\" \"acct\" \"-X\" \"76616c7565\" \"/tmp/a.keychain-db\"\n"
         )
+        #expect(setSecretInput.contains("value") == false)
         #expect(
             runner.invocations[4].arguments == [
                 "find-generic-password", "-s", "svc", "-a", "acct", "-w", "/tmp/a.keychain-db"
@@ -42,14 +49,34 @@ struct SecurityCLITests {
         )
     }
 
-    @Test("Trims secret output newlines")
-    func getSecretTrimsNewline() throws {
+    @Test("Removes only transport newline from secret output")
+    func getSecretRemovesTransportNewline() throws {
         let runner = FakeProcessRunner()
         runner.enqueueSuccess(standardOutput: Data("top-secret\n".utf8))
         let cli = SecurityCLI(processRunner: runner)
 
         let secret = try cli.getSecret(keychainPath: "/tmp/a", service: "svc", account: "acct")
         #expect(secret == "top-secret")
+    }
+
+    @Test("Preserves leading and trailing newline bytes in secret payload")
+    func getSecretPreservesPayloadNewlines() throws {
+        let runner = FakeProcessRunner()
+        runner.enqueueSuccess(standardOutput: Data("\nedge\n\n".utf8))
+        let cli = SecurityCLI(processRunner: runner)
+
+        let secret = try cli.getSecret(keychainPath: "/tmp/a", service: "svc", account: "acct")
+        #expect(secret == "\nedge\n")
+    }
+
+    @Test("Handles CRLF-terminated transport output")
+    func getSecretHandlesCRLFTransportTerminator() throws {
+        let runner = FakeProcessRunner()
+        runner.enqueueSuccess(standardOutput: Data("secret\r\n".utf8))
+        let cli = SecurityCLI(processRunner: runner)
+
+        let secret = try cli.getSecret(keychainPath: "/tmp/a", service: "svc", account: "acct")
+        #expect(secret == "secret")
     }
 
     @Test("Reports subprocess failure details")
@@ -80,8 +107,22 @@ struct SecurityCLITests {
                 return
             }
             #expect(message.contains("top-secret") == false)
-            #expect(message.contains("<redacted>"))
+            #expect(message.contains("746f702d736563726574") == false)
+            #expect(message.contains("[-i]"))
         }
+    }
+
+    @Test("Passes default and custom subprocess timeout values")
+    func subprocessTimeoutConfiguration() throws {
+        let defaultRunner = FakeProcessRunner()
+        let defaultCLI = SecurityCLI(processRunner: defaultRunner)
+        try defaultCLI.deleteKeychain(at: "/tmp/default")
+        #expect(defaultRunner.invocations[0].timeout == SecurityCLI.defaultSubprocessTimeout)
+
+        let customRunner = FakeProcessRunner()
+        let customCLI = SecurityCLI(processRunner: customRunner, subprocessTimeout: 2.5)
+        try customCLI.deleteKeychain(at: "/tmp/custom")
+        #expect(customRunner.invocations[0].timeout == 2.5)
     }
 
     @Test("Uses exit code detail when stderr empty")
