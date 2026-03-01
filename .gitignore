@@ -60,3 +60,16 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# OpenCode workspace artifacts
+.opencode/
+
+# AI agent local configs/docs
+.cursor/
+.cursorrules
+.github/copilot-instructions.md
+CLAUDE.md
+GEMINI.md
+AGENTS.local.md
+AGENTS.md
+agents.md
