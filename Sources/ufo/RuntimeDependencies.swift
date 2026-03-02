@@ -101,38 +101,30 @@ final class SystemProcessRunner: ProcessRunning {
         let readerGroup = DispatchGroup()
         let readerQueue = DispatchQueue(label: "ufo.system-process-runner.pipe-reader", attributes: .concurrent)
 
-        // Start pipe readers before launching the process to avoid a race
-        // where fast-exiting children close their pipe ends before readers
-        // are dispatched.  readToEnd() blocks until the writing ends are
-        // closed (which we do right after process.run()).
-        readerGroup.enter()
-        readerQueue.async {
-            let data = (try? outputPipe.fileHandleForReading.readToEnd()) ?? Data()
-            pipeCapture.setOutput(data)
-            readerGroup.leave()
-        }
-
-        readerGroup.enter()
-        readerQueue.async {
-            let data = (try? errorPipe.fileHandleForReading.readToEnd()) ?? Data()
-            pipeCapture.setError(data)
-            readerGroup.leave()
-        }
-
         do {
             try process.run()
         } catch {
-            // Unblock readers so they don't hang forever.
-            outputPipe.fileHandleForWriting.closeFile()
-            errorPipe.fileHandleForWriting.closeFile()
-            awaitPipeReaders(readerGroup, outputPipe: outputPipe, errorPipe: errorPipe)
             throw UFOError.subprocess("Failed to launch subprocess at \(executable): \(error.localizedDescription)")
         }
 
-        // Close the parent's writing ends so readToEnd() can return EOF
-        // once the child closes its side.
+        // Close the parent's writing ends so readers get EOF once the
+        // child also closes its side.
         outputPipe.fileHandleForWriting.closeFile()
         errorPipe.fileHandleForWriting.closeFile()
+
+        // Read child output using POSIX read(2) to avoid Foundation
+        // FileHandle methods that can throw ObjC exceptions on CI runners.
+        readerGroup.enter()
+        readerQueue.async {
+            pipeCapture.setOutput(Self.readAll(from: outputPipe.fileHandleForReading.fileDescriptor))
+            readerGroup.leave()
+        }
+
+        readerGroup.enter()
+        readerQueue.async {
+            pipeCapture.setError(Self.readAll(from: errorPipe.fileHandleForReading.fileDescriptor))
+            readerGroup.leave()
+        }
 
         if let payload = standardInput, let inputPipe {
             do {
@@ -200,6 +192,28 @@ final class SystemProcessRunner: ProcessRunning {
         outputPipe.fileHandleForReading.closeFile()
         errorPipe.fileHandleForReading.closeFile()
         _ = group.wait(timeout: .now() + 1)
+    }
+
+    /// Read all available bytes from a file descriptor using POSIX read(2).
+    /// Returns accumulated data after EOF (read returns 0) or an unrecoverable error.
+    /// This avoids Foundation's FileHandle.readToEnd() which can throw ObjC
+    /// NSFileHandleOperationException on some CI environments.
+    private static func readAll(from fd: Int32) -> Data {
+        var result = Data()
+        let bufferSize = 65_536
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+        defer { buffer.deallocate() }
+
+        while true {
+            let bytesRead = Darwin.read(fd, buffer, bufferSize)
+            if bytesRead > 0 {
+                result.append(buffer, count: bytesRead)
+            } else {
+                // 0 = EOF, -1 = error (treat both as end of stream)
+                break
+            }
+        }
+        return result
     }
 
     private func writeStandardInput(
