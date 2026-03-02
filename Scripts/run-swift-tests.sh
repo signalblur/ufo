@@ -28,8 +28,20 @@ if "Unknown option" in text:
     print("unknown_option")
     raise SystemExit(0)
 
-if "Testing Library Version:" in text:
-    print("swift_testing")
+match = re.search(r"Test run with\s+(\d+)\s+tests", text)
+if match is not None:
+    if int(match.group(1)) > 0:
+        print("swift_testing_nonzero")
+    else:
+        print("zero_tests")
+    raise SystemExit(0)
+
+if "No matching test cases were run" in text:
+    print("zero_tests")
+    raise SystemExit(0)
+
+if "Executed 0 tests," in text:
+    print("zero_tests")
     raise SystemExit(0)
 
 match = re.search(r"Executed\s+(\d+)\s+tests,", text)
@@ -37,7 +49,7 @@ if match is not None:
     if int(match.group(1)) > 0:
         print("xctest_nonzero")
     else:
-        print("xctest_zero")
+        print("zero_tests")
     raise SystemExit(0)
 
 print("unknown")
@@ -66,11 +78,15 @@ run_with_flag() {
 
     python3 Scripts/filter-swift-noise.py < "$TMP_LOG_PATH"
 
+    if [[ "$classification" == "zero_tests" ]]; then
+        return 124
+    fi
+
     if [[ $status -ne 0 ]]; then
         return "$status"
     fi
 
-    if [[ "$classification" == "swift_testing" || "$classification" == "xctest_nonzero" ]]; then
+    if [[ "$classification" == "swift_testing_nonzero" || "$classification" == "xctest_nonzero" ]]; then
         return 0
     fi
 
