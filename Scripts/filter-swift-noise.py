@@ -15,4 +15,4 @@ for raw_line in sys.stdin:
     line = raw_line.rstrip("\n")
     if any(pattern.match(line) for pattern in PATTERNS):
         continue
-    sys.stderr.write(raw_line)
+    sys.stdout.write(raw_line)

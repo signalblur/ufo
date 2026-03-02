@@ -17,9 +17,27 @@ fi
 
 export LLVM_PROFILE_FILE="${LLVM_PROFILE_FILE:-${TMPDIR:-/tmp}/ufo-%p-%m.profraw}"
 
-swift test "${SWIFT_TEST_ARGS[@]}" 2> >(python3 Scripts/filter-swift-noise.py >&2)
+swift test "${SWIFT_TEST_ARGS[@]}" \
+    > >(python3 Scripts/filter-swift-noise.py) \
+    2> >(python3 Scripts/filter-swift-noise.py >&2)
 
-CODECOV_JSON_PATH="$(swift test --show-codecov-path 2> >(python3 Scripts/filter-swift-noise.py >&2))"
+CODECOV_JSON_PATH="$(python3 - <<'PY'
+from pathlib import Path
+import sys
+
+candidates = sorted(
+    Path(".build").glob("**/codecov/*.json"),
+    key=lambda item: item.stat().st_mtime,
+    reverse=True,
+)
+
+if not candidates:
+    print("No coverage JSON produced under .build/**/codecov/*.json", file=sys.stderr)
+    sys.exit(1)
+
+print(candidates[0])
+PY
+)"
 
 python3 - "$CODECOV_JSON_PATH" <<'PY'
 import json
