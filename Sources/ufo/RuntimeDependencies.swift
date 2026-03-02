@@ -101,31 +101,47 @@ final class SystemProcessRunner: ProcessRunning {
             throw UFOError.subprocess("Failed to create output pipes for subprocess.")
         }
 
-        // Give the write ends to the child via FileHandle, which Process
-        // will dup2 into the child's stdout/stderr.
-        process.standardOutput = FileHandle(fileDescriptor: stdoutFDs[1], closeOnDealloc: false)
-        process.standardError = FileHandle(fileDescriptor: stderrFDs[1], closeOnDealloc: false)
-
-        let pipeCapture = PipeCaptureState()
-        let readerGroup = DispatchGroup()
-        let readerQueue = DispatchQueue(label: "ufo.system-process-runner.pipe-reader", attributes: .concurrent)
+        // Give Process a *duplicate* of each write end.  Foundation's
+        // Process.run() may close the fd it receives during posix_spawn
+        // setup.  By handing over a dup we guarantee our original write-end
+        // fds stay valid so the parent can close them deterministically
+        // after launch and readers will see EOF once the child exits.
+        let stdoutWriteDup = dup(stdoutFDs[1])
+        let stderrWriteDup = dup(stderrFDs[1])
+        guard stdoutWriteDup >= 0, stderrWriteDup >= 0 else {
+            Darwin.close(stdoutFDs[0]); Darwin.close(stdoutFDs[1])
+            Darwin.close(stderrFDs[0]); Darwin.close(stderrFDs[1])
+            if stdoutWriteDup >= 0 { Darwin.close(stdoutWriteDup) }
+            if stderrWriteDup >= 0 { Darwin.close(stderrWriteDup) }
+            throw UFOError.subprocess("Failed to duplicate output pipe descriptors for subprocess.")
+        }
+        // closeOnDealloc: true — Process owns these duplicates.
+        process.standardOutput = FileHandle(fileDescriptor: stdoutWriteDup, closeOnDealloc: true)
+        process.standardError = FileHandle(fileDescriptor: stderrWriteDup, closeOnDealloc: true)
 
         do {
             try process.run()
         } catch {
             Darwin.close(stdoutFDs[0]); Darwin.close(stdoutFDs[1])
             Darwin.close(stderrFDs[0]); Darwin.close(stderrFDs[1])
+            // Dups will be closed by FileHandle dealloc (closeOnDealloc: true)
             throw UFOError.subprocess("Failed to launch subprocess at \(executable): \(error.localizedDescription)")
         }
 
-        // Close the parent's writing ends so readers get EOF once the
-        // child also closes its side.
+        // Close the parent's original write ends so the only remaining
+        // writers are the child process (via the dup'd fds).  When the
+        // child exits, readers will see EOF.
         Darwin.close(stdoutFDs[1])
         Darwin.close(stderrFDs[1])
 
         // Read child output using POSIX read(2) on fds we fully control.
+        // Readers run concurrently so neither pipe's kernel buffer can
+        // fill up and deadlock the child.
         let outputReadFD = stdoutFDs[0]
         let errorReadFD = stderrFDs[0]
+        let pipeCapture = PipeCaptureState()
+        let readerGroup = DispatchGroup()
+        let readerQueue = DispatchQueue(label: "ufo.system-process-runner.pipe-reader", attributes: .concurrent)
 
         readerGroup.enter()
         readerQueue.async {
