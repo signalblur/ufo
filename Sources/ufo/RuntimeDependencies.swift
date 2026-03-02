@@ -97,6 +97,12 @@ final class SystemProcessRunner: ProcessRunning {
             nullInputHandle?.closeFile()
         }
 
+        // Capture raw file descriptors before any async work.  Accessing
+        // FileHandle.fileDescriptor after the pipe breaks throws an ObjC
+        // NSFileHandleOperationException on CI runners.
+        let outputReadFD = outputPipe.fileHandleForReading.fileDescriptor
+        let errorReadFD = errorPipe.fileHandleForReading.fileDescriptor
+
         let pipeCapture = PipeCaptureState()
         let readerGroup = DispatchGroup()
         let readerQueue = DispatchQueue(label: "ufo.system-process-runner.pipe-reader", attributes: .concurrent)
@@ -112,17 +118,18 @@ final class SystemProcessRunner: ProcessRunning {
         outputPipe.fileHandleForWriting.closeFile()
         errorPipe.fileHandleForWriting.closeFile()
 
-        // Read child output using POSIX read(2) to avoid Foundation
-        // FileHandle methods that can throw ObjC exceptions on CI runners.
+        // Read child output using POSIX read(2) on pre-captured file
+        // descriptors to avoid Foundation FileHandle methods that throw
+        // ObjC exceptions on CI runners.
         readerGroup.enter()
         readerQueue.async {
-            pipeCapture.setOutput(Self.readAll(from: outputPipe.fileHandleForReading.fileDescriptor))
+            pipeCapture.setOutput(Self.readAll(from: outputReadFD))
             readerGroup.leave()
         }
 
         readerGroup.enter()
         readerQueue.async {
-            pipeCapture.setError(Self.readAll(from: errorPipe.fileHandleForReading.fileDescriptor))
+            pipeCapture.setError(Self.readAll(from: errorReadFD))
             readerGroup.leave()
         }
 
@@ -137,7 +144,7 @@ final class SystemProcessRunner: ProcessRunning {
                 )
             } catch let error as UFOError {
                 terminateAndReap(process, completion: completion)
-                awaitPipeReaders(readerGroup, outputPipe: outputPipe, errorPipe: errorPipe)
+                awaitPipeReaders(readerGroup, outputFD: outputReadFD, errorFD: errorReadFD)
                 throw error
             }
         }
@@ -145,13 +152,13 @@ final class SystemProcessRunner: ProcessRunning {
         let waitResult = completion.wait(timeout: deadline)
         guard waitResult == .success else {
             terminateAndReap(process, completion: completion)
-            awaitPipeReaders(readerGroup, outputPipe: outputPipe, errorPipe: errorPipe)
+            awaitPipeReaders(readerGroup, outputFD: outputReadFD, errorFD: errorReadFD)
             throw UFOError.subprocess(
                 "Subprocess timed out after \(formatTimeout(timeout)) seconds at \(executable)."
             )
         }
 
-        awaitPipeReaders(readerGroup, outputPipe: outputPipe, errorPipe: errorPipe)
+        awaitPipeReaders(readerGroup, outputFD: outputReadFD, errorFD: errorReadFD)
 
         let captured = pipeCapture.get()
 
@@ -183,14 +190,17 @@ final class SystemProcessRunner: ProcessRunning {
         _ = completion.wait(timeout: .now() + 1)
     }
 
-    private func awaitPipeReaders(_ group: DispatchGroup, outputPipe: Pipe, errorPipe: Pipe) {
+    private func awaitPipeReaders(_ group: DispatchGroup, outputFD: Int32, errorFD: Int32) {
         let waitResult = group.wait(timeout: .now() + 1)
         guard waitResult == .timedOut else {
             return
         }
 
-        outputPipe.fileHandleForReading.closeFile()
-        errorPipe.fileHandleForReading.closeFile()
+        // Force-close the file descriptors to unblock any stuck read(2)
+        // calls.  Uses POSIX close() to avoid ObjC exceptions from
+        // FileHandle.closeFile() on broken pipes.
+        Darwin.close(outputFD)
+        Darwin.close(errorFD)
         _ = group.wait(timeout: .now() + 1)
     }
 
