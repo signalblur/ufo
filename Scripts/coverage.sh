@@ -1,9 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-swift test --enable-swift-testing --enable-code-coverage
+SWIFT_TEST_HELP="$(swift test --help)"
+SWIFT_TEST_ARGS=(--enable-code-coverage)
 
-CODECOV_JSON_PATH="$(swift test --enable-swift-testing --enable-code-coverage --show-codecov-path)"
+if [[ "$SWIFT_TEST_HELP" == *"--enable-swift-testing"* ]]; then
+    SWIFT_TEST_ARGS=(--enable-swift-testing "${SWIFT_TEST_ARGS[@]}")
+elif [[ "$SWIFT_TEST_HELP" == *"--enable-experimental-swift-testing"* ]]; then
+    SWIFT_TEST_ARGS=(--enable-experimental-swift-testing "${SWIFT_TEST_ARGS[@]}")
+fi
+
+export LLVM_PROFILE_FILE="${LLVM_PROFILE_FILE:-${TMPDIR:-/tmp}/ufo-%p-%m.profraw}"
+
+swift test "${SWIFT_TEST_ARGS[@]}"
+
+CODECOV_JSON_PATH="$(swift test "${SWIFT_TEST_ARGS[@]}" --show-codecov-path)"
 
 python3 - "$CODECOV_JSON_PATH" <<'PY'
 import json

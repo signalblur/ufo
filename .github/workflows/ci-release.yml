@@ -38,7 +38,18 @@ jobs:
         run: swift build
 
       - name: Run tests
-        run: swift test --enable-swift-testing --parallel
+        run: |
+          set -euo pipefail
+          SWIFT_TEST_HELP="$(swift test --help)"
+          SWIFT_TEST_ARGS=(--parallel)
+
+          if [[ "$SWIFT_TEST_HELP" == *"--enable-swift-testing"* ]]; then
+            SWIFT_TEST_ARGS=(--enable-swift-testing "${SWIFT_TEST_ARGS[@]}")
+          elif [[ "$SWIFT_TEST_HELP" == *"--enable-experimental-swift-testing"* ]]; then
+            SWIFT_TEST_ARGS=(--enable-experimental-swift-testing "${SWIFT_TEST_ARGS[@]}")
+          fi
+
+          swift test "${SWIFT_TEST_ARGS[@]}"
 
       - name: Enforce coverage gate
         run: bash Scripts/coverage.sh
@@ -72,7 +83,7 @@ jobs:
           set -euo pipefail
           bash Scripts/coverage.sh
 
-          CODECOV_PATH="$(swift test --enable-swift-testing --enable-code-coverage --show-codecov-path)"
+          CODECOV_PATH="$(swift test --show-codecov-path)"
           python3 - "$CODECOV_PATH" "$RUNNER_TEMP/coverage-badge.json" <<'PY'
           import json
           import pathlib
