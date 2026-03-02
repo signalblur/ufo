@@ -74,22 +74,22 @@ final class SystemProcessRunner: ProcessRunning {
         }
 
         let inputPipe: Pipe?
-        let nullInputHandle: FileHandle?
         if standardInput != nil {
             let pipe = Pipe()
             process.standardInput = pipe
             inputPipe = pipe
-            nullInputHandle = nil
+            Self.debugLog("stdin: using Pipe (has payload)")
         } else {
-            guard let handle = FileHandle(forReadingAtPath: "/dev/null") else {
-                throw UFOError.subprocess("Failed to open /dev/null for subprocess stdin redirection.")
-            }
-            process.standardInput = handle
+            // Use a Foundation Pipe with its write end closed immediately
+            // so the child reads EOF on first read (equivalent to /dev/null).
+            // A plain FileHandle for /dev/null causes Foundation's Process
+            // to mishandle stdout/stderr pipe setup on some macOS CI runners,
+            // producing empty stdout capture.
+            let nullPipe = Pipe()
+            nullPipe.fileHandleForWriting.closeFile()
+            process.standardInput = nullPipe
             inputPipe = nil
-            nullInputHandle = handle
-        }
-        defer {
-            nullInputHandle?.closeFile()
+            Self.debugLog("stdin: using Pipe with closed write end (null stdin)")
         }
 
         // Build our own pipe pairs with POSIX pipe(2) so we own every fd
@@ -100,6 +100,7 @@ final class SystemProcessRunner: ProcessRunning {
         guard pipe(&stdoutFDs) == 0, pipe(&stderrFDs) == 0 else {
             throw UFOError.subprocess("Failed to create output pipes for subprocess.")
         }
+        Self.debugLog("pipes: stdout=[\(stdoutFDs[0]),\(stdoutFDs[1])] stderr=[\(stderrFDs[0]),\(stderrFDs[1])]")
 
         // Give Process a *duplicate* of each write end.  Foundation's
         // Process.run() may close the fd it receives during posix_spawn
@@ -122,6 +123,7 @@ final class SystemProcessRunner: ProcessRunning {
         }
         process.standardOutput = FileHandle(fileDescriptor: stdoutWriteDup, closeOnDealloc: false)
         process.standardError = FileHandle(fileDescriptor: stderrWriteDup, closeOnDealloc: false)
+        Self.debugLog("dups: stdoutWriteDup=\(stdoutWriteDup) stderrWriteDup=\(stderrWriteDup)")
 
         do {
             try process.run()
@@ -138,10 +140,12 @@ final class SystemProcessRunner: ProcessRunning {
         // exits — no reliance on timeouts or force-close fallbacks.
         // If Process.run() already closed the dup'd fds internally,
         // close() returns EBADF harmlessly.
+        Self.debugLog("launched pid=\(process.processIdentifier), closing write ends")
         Darwin.close(stdoutFDs[1])
         Darwin.close(stderrFDs[1])
         Darwin.close(stdoutWriteDup)
         Darwin.close(stderrWriteDup)
+        Self.debugLog("write ends closed, starting readers on fd \(stdoutFDs[0]) and \(stderrFDs[0])")
 
         // Read child output using POSIX read(2) on fds we fully control.
         // Readers run concurrently so neither pipe's kernel buffer can
@@ -183,6 +187,7 @@ final class SystemProcessRunner: ProcessRunning {
         }
 
         let waitResult = completion.wait(timeout: deadline)
+        Self.debugLog("completion.wait result=\(waitResult == .success ? "success" : "timedOut")")
         guard waitResult == .success else {
             terminateAndReap(process, completion: completion)
             awaitPipeReaders(readerGroup, outputFD: outputReadFD, errorFD: errorReadFD)
@@ -194,6 +199,7 @@ final class SystemProcessRunner: ProcessRunning {
         awaitPipeReaders(readerGroup, outputFD: outputReadFD, errorFD: errorReadFD)
 
         let captured = pipeCapture.get()
+        Self.debugLog("result: exit=\(process.terminationStatus) stdout=\(captured.output.count)b stderr=\(captured.error.count)b stdout_utf8='\(String(decoding: captured.output, as: UTF8.self))'")
 
         return ProcessResult(
             exitCode: process.terminationStatus,
@@ -226,15 +232,26 @@ final class SystemProcessRunner: ProcessRunning {
     private func awaitPipeReaders(_ group: DispatchGroup, outputFD: Int32, errorFD: Int32) {
         let waitResult = group.wait(timeout: .now() + 1)
         guard waitResult == .timedOut else {
+            Self.debugLog("awaitPipeReaders: readers completed normally")
             return
         }
 
+        Self.debugLog("awaitPipeReaders: TIMEOUT — force-closing fd \(outputFD) and \(errorFD)")
         // Force-close the file descriptors to unblock any stuck read(2)
         // calls.  Uses POSIX close() to avoid ObjC exceptions from
         // FileHandle.closeFile() on broken pipes.
         Darwin.close(outputFD)
         Darwin.close(errorFD)
-        _ = group.wait(timeout: .now() + 1)
+        let finalWait = group.wait(timeout: .now() + 1)
+        Self.debugLog("awaitPipeReaders: after force-close wait=\(finalWait == .success ? "success" : "timedOut")")
+    }
+
+    // TEMPORARY: CI debug logging — remove after pipeline is green.
+    private static func debugLog(_ message: String) {
+        var msg = "DEBUG[ProcessRunner]: \(message)\n"
+        msg.withUTF8 { buf in
+            _ = Darwin.write(STDERR_FILENO, buf.baseAddress!, buf.count)
+        }
     }
 
     /// Read all available bytes from a file descriptor using POSIX read(2).
@@ -253,6 +270,8 @@ final class SystemProcessRunner: ProcessRunning {
                 result.append(buffer, count: bytesRead)
             } else {
                 // 0 = EOF, -1 = error (treat both as end of stream)
+                let errCode = (bytesRead < 0) ? errno : 0
+                debugLog("readAll(fd=\(fd)): exit loop bytesRead=\(bytesRead) errno=\(errCode) totalBytes=\(result.count)")
                 break
             }
         }
