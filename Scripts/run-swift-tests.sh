@@ -54,10 +54,8 @@ run_with_flag() {
 
     : > "$TMP_LOG_PATH"
 
-    set +e
-    swift test "${args[@]}" >"$TMP_LOG_PATH" 2>&1
-    local status=$?
-    set -e
+    local status=0
+    swift test "${args[@]}" >"$TMP_LOG_PATH" 2>&1 || status=$?
 
     local classification
     classification="$(classify_log "$TMP_LOG_PATH")"
@@ -82,10 +80,8 @@ run_with_flag() {
 CANDIDATE_FLAGS=("--enable-swift-testing" "--enable-experimental-swift-testing" "--experimental-swift-testing" "")
 
 for candidate_flag in "${CANDIDATE_FLAGS[@]}"; do
-    set +e
-    run_with_flag "$candidate_flag"
-    status=$?
-    set -e
+    status=0
+    run_with_flag "$candidate_flag" || status=$?
 
     if [[ $status -eq 0 ]]; then
         exit 0
