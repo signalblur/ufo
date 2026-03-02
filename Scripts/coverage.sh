@@ -17,9 +17,9 @@ fi
 
 export LLVM_PROFILE_FILE="${LLVM_PROFILE_FILE:-${TMPDIR:-/tmp}/ufo-%p-%m.profraw}"
 
-swift test "${SWIFT_TEST_ARGS[@]}"
+swift test "${SWIFT_TEST_ARGS[@]}" 2> >(python3 Scripts/filter-swift-noise.py >&2)
 
-CODECOV_JSON_PATH="$(swift test "${SWIFT_TEST_ARGS[@]}" --show-codecov-path)"
+CODECOV_JSON_PATH="$(swift test --show-codecov-path 2> >(python3 Scripts/filter-swift-noise.py >&2))"
 
 python3 - "$CODECOV_JSON_PATH" <<'PY'
 import json

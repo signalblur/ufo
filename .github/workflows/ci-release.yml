@@ -54,7 +54,7 @@ jobs:
             SWIFT_TEST_ARGS=(--enable-experimental-swift-testing "${SWIFT_TEST_ARGS[@]}")
           fi
 
-          swift test "${SWIFT_TEST_ARGS[@]}"
+          swift test "${SWIFT_TEST_ARGS[@]}" 2> >(python3 Scripts/filter-swift-noise.py >&2)
 
       - name: Enforce coverage gate
         run: bash Scripts/coverage.sh
@@ -88,7 +88,7 @@ jobs:
           set -euo pipefail
           bash Scripts/coverage.sh
 
-          CODECOV_PATH="$(swift test --show-codecov-path)"
+          CODECOV_PATH="$(swift test --show-codecov-path 2> >(python3 Scripts/filter-swift-noise.py >&2))"
           python3 - "$CODECOV_PATH" "$RUNNER_TEMP/coverage-badge.json" <<'PY'
           import json
           import pathlib
