@@ -1,4 +1,4 @@
-// swift-tools-version: 5.10
+// swift-tools-version: 6.0
 import PackageDescription
 
 let package = Package(
@@ -12,7 +12,7 @@ let package = Package(
         .executable(name: "ufo-fuzz", targets: ["ufo-fuzz"])
     ],
     dependencies: [
-        .package(url: "https://github.com/swiftlang/swift-testing.git", exact: "0.10.0")
+        .package(url: "https://github.com/swiftlang/swift-testing.git", from: "0.10.0")
     ],
     targets: [
         .target(
@@ -32,9 +32,6 @@ let package = Package(
                 "UFOLib",
                 "ufo",
                 .product(name: "Testing", package: "swift-testing")
-            ],
-            swiftSettings: [
-                .unsafeFlags(["-suppress-warnings"])
             ]
         )
     ]

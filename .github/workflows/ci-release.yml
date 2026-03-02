@@ -18,7 +18,7 @@ concurrency:
 jobs:
   ci:
     name: CI
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -38,9 +38,7 @@ jobs:
         run: swift build
 
       - name: Run tests
-        run: |
-          set -euo pipefail
-          bash Scripts/run-swift-tests.sh --parallel
+        run: swift test --parallel
 
       - name: Enforce coverage gate
         run: bash Scripts/coverage.sh
@@ -52,7 +50,7 @@ jobs:
     name: Update coverage badge
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: ci
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
     steps:
@@ -166,7 +164,7 @@ jobs:
     name: Release macOS arm64 tarball
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: ci
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
     steps:

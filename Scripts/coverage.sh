@@ -3,7 +3,7 @@ set -euo pipefail
 
 export LLVM_PROFILE_FILE="${LLVM_PROFILE_FILE:-${TMPDIR:-/tmp}/ufo-%p-%m.profraw}"
 
-bash Scripts/run-swift-tests.sh --enable-code-coverage
+swift test --enable-code-coverage
 
 CODECOV_JSON_PATH="$(python3 - <<'PY'
 from pathlib import Path
