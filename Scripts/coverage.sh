@@ -3,6 +3,11 @@ set -euo pipefail
 
 SWIFT_TEST_HELP="$(swift test --help)"
 SWIFT_TEST_ARGS=(--enable-code-coverage)
+SWIFTC_HELP="$(swiftc -help)"
+
+if [[ "$SWIFTC_HELP" == *"-suppress-remarks"* ]]; then
+    SWIFT_TEST_ARGS=(-Xswiftc -suppress-remarks "${SWIFT_TEST_ARGS[@]}")
+fi
 
 if [[ "$SWIFT_TEST_HELP" == *"--enable-swift-testing"* ]]; then
     SWIFT_TEST_ARGS=(--enable-swift-testing "${SWIFT_TEST_ARGS[@]}")
