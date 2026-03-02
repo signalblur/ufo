@@ -55,20 +55,20 @@ run_with_flag() {
     : > "$TMP_LOG_PATH"
 
     set +e
-    swift test "${args[@]}" \
-        > >(python3 Scripts/filter-swift-noise.py | tee "$TMP_LOG_PATH") \
-        2> >(python3 Scripts/filter-swift-noise.py | tee -a "$TMP_LOG_PATH" >&2)
+    swift test "${args[@]}" >"$TMP_LOG_PATH" 2>&1
     local status=$?
     set -e
 
     local classification
     classification="$(classify_log "$TMP_LOG_PATH")"
 
-    if [[ $status -ne 0 ]]; then
-        if [[ "$classification" == "unknown_option" ]]; then
-            return 125
-        fi
+    if [[ "$classification" == "unknown_option" ]]; then
+        return 125
+    fi
 
+    python3 Scripts/filter-swift-noise.py < "$TMP_LOG_PATH"
+
+    if [[ $status -ne 0 ]]; then
         return "$status"
     fi
 
@@ -79,14 +79,18 @@ run_with_flag() {
     return 124
 }
 
-CANDIDATE_FLAGS=("--enable-swift-testing" "--enable-experimental-swift-testing" "")
+CANDIDATE_FLAGS=("--enable-swift-testing" "--enable-experimental-swift-testing" "--experimental-swift-testing" "")
 
 for candidate_flag in "${CANDIDATE_FLAGS[@]}"; do
-    if run_with_flag "$candidate_flag"; then
+    set +e
+    run_with_flag "$candidate_flag"
+    status=$?
+    set -e
+
+    if [[ $status -eq 0 ]]; then
         exit 0
     fi
 
-    status=$?
     if [[ $status -eq 125 ]]; then
         continue
     fi
