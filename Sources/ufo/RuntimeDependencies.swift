@@ -73,11 +73,6 @@ final class SystemProcessRunner: ProcessRunning {
             process.terminationHandler = nil
         }
 
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-
         let inputPipe: Pipe?
         let nullInputHandle: FileHandle?
         if standardInput != nil {
@@ -97,11 +92,19 @@ final class SystemProcessRunner: ProcessRunning {
             nullInputHandle?.closeFile()
         }
 
-        // Capture raw file descriptors before any async work.  Accessing
-        // FileHandle.fileDescriptor after the pipe breaks throws an ObjC
-        // NSFileHandleOperationException on CI runners.
-        let outputReadFD = outputPipe.fileHandleForReading.fileDescriptor
-        let errorReadFD = errorPipe.fileHandleForReading.fileDescriptor
+        // Build our own pipe pairs with POSIX pipe(2) so we own every fd
+        // and nothing in Foundation can close or invalidate them behind
+        // our back.  Each pair: [0] = read end, [1] = write end.
+        var stdoutFDs: [Int32] = [0, 0]
+        var stderrFDs: [Int32] = [0, 0]
+        guard pipe(&stdoutFDs) == 0, pipe(&stderrFDs) == 0 else {
+            throw UFOError.subprocess("Failed to create output pipes for subprocess.")
+        }
+
+        // Give the write ends to the child via FileHandle, which Process
+        // will dup2 into the child's stdout/stderr.
+        process.standardOutput = FileHandle(fileDescriptor: stdoutFDs[1], closeOnDealloc: false)
+        process.standardError = FileHandle(fileDescriptor: stderrFDs[1], closeOnDealloc: false)
 
         let pipeCapture = PipeCaptureState()
         let readerGroup = DispatchGroup()
@@ -110,26 +113,31 @@ final class SystemProcessRunner: ProcessRunning {
         do {
             try process.run()
         } catch {
+            Darwin.close(stdoutFDs[0]); Darwin.close(stdoutFDs[1])
+            Darwin.close(stderrFDs[0]); Darwin.close(stderrFDs[1])
             throw UFOError.subprocess("Failed to launch subprocess at \(executable): \(error.localizedDescription)")
         }
 
         // Close the parent's writing ends so readers get EOF once the
         // child also closes its side.
-        outputPipe.fileHandleForWriting.closeFile()
-        errorPipe.fileHandleForWriting.closeFile()
+        Darwin.close(stdoutFDs[1])
+        Darwin.close(stderrFDs[1])
 
-        // Read child output using POSIX read(2) on pre-captured file
-        // descriptors to avoid Foundation FileHandle methods that throw
-        // ObjC exceptions on CI runners.
+        // Read child output using POSIX read(2) on fds we fully control.
+        let outputReadFD = stdoutFDs[0]
+        let errorReadFD = stderrFDs[0]
+
         readerGroup.enter()
         readerQueue.async {
             pipeCapture.setOutput(Self.readAll(from: outputReadFD))
+            Darwin.close(outputReadFD)
             readerGroup.leave()
         }
 
         readerGroup.enter()
         readerQueue.async {
             pipeCapture.setError(Self.readAll(from: errorReadFD))
+            Darwin.close(errorReadFD)
             readerGroup.leave()
         }
 
