@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import os
 import UFOLib
 
 struct SystemClock: Clock {
@@ -105,27 +106,21 @@ final class SystemProcessRunner: ProcessRunning {
         outputPipe.fileHandleForWriting.closeFile()
         errorPipe.fileHandleForWriting.closeFile()
 
+        let pipeCapture = PipeCaptureState()
         let readerGroup = DispatchGroup()
         let readerQueue = DispatchQueue(label: "ufo.system-process-runner.pipe-reader", attributes: .concurrent)
-        let captureQueue = DispatchQueue(label: "ufo.system-process-runner.pipe-capture")
-        var capturedOutput = Data()
-        var capturedError = Data()
 
         readerGroup.enter()
         readerQueue.async {
-            let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-            captureQueue.sync {
-                capturedOutput = data
-            }
+            let data = (try? outputPipe.fileHandleForReading.readToEnd()) ?? Data()
+            pipeCapture.setOutput(data)
             readerGroup.leave()
         }
 
         readerGroup.enter()
         readerQueue.async {
-            let data = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            captureQueue.sync {
-                capturedError = data
-            }
+            let data = (try? errorPipe.fileHandleForReading.readToEnd()) ?? Data()
+            pipeCapture.setError(data)
             readerGroup.leave()
         }
 
@@ -156,13 +151,12 @@ final class SystemProcessRunner: ProcessRunning {
 
         awaitPipeReaders(readerGroup, outputPipe: outputPipe, errorPipe: errorPipe)
 
-        let standardOutput = captureQueue.sync { capturedOutput }
-        let standardError = captureQueue.sync { capturedError }
+        let captured = pipeCapture.get()
 
         return ProcessResult(
             exitCode: process.terminationStatus,
-            standardOutput: standardOutput,
-            standardError: standardError
+            standardOutput: captured.output,
+            standardError: captured.error
         )
     }
 
@@ -206,17 +200,16 @@ final class SystemProcessRunner: ProcessRunning {
         timeout: TimeInterval
     ) throws {
         let completion = DispatchSemaphore(value: 0)
-        let stateQueue = DispatchQueue(label: "ufo.system-process-runner.stdin-write-state")
-        var writeError: Error?
+        let writeState = StdinWriteState()
 
         DispatchQueue.global(qos: .userInitiated).async {
             let descriptor = handle.fileDescriptor
             if fcntl(descriptor, F_SETNOSIGPIPE, 1) == -1 {
                 let errorCode = errno
                 let message = String(cString: strerror(errorCode))
-                stateQueue.sync {
-                    writeError = UFOError.subprocess("Failed to configure subprocess stdin writer: \(message)")
-                }
+                writeState.setError(
+                    UFOError.subprocess("Failed to configure subprocess stdin writer: \(message)")
+                )
                 completion.signal()
                 return
             }
@@ -225,9 +218,7 @@ final class SystemProcessRunner: ProcessRunning {
                 try handle.write(contentsOf: payload)
                 try handle.close()
             } catch {
-                stateQueue.sync {
-                    writeError = error
-                }
+                writeState.setError(error)
             }
             completion.signal()
         }
@@ -239,10 +230,30 @@ final class SystemProcessRunner: ProcessRunning {
             )
         }
 
-        if let writeError = stateQueue.sync(execute: { writeError }) {
-            throw UFOError.subprocess("Failed writing subprocess stdin at \(executable): \(writeError.localizedDescription)")
+        if let error = writeState.get() {
+            throw UFOError.subprocess("Failed writing subprocess stdin at \(executable): \(error.localizedDescription)")
         }
     }
+}
+
+// MARK: - Sendable state containers for cross-queue data transfer
+
+/// Thread-safe container for pipe capture results.
+/// `OSAllocatedUnfairLock` is Sendable and compiler-verified safe on macOS 14+.
+private struct PipeCaptureState: Sendable {
+    private let state = OSAllocatedUnfairLock(initialState: (output: Data(), error: Data()))
+
+    func setOutput(_ data: Data) { state.withLock { $0.output = data } }
+    func setError(_ data: Data) { state.withLock { $0.error = data } }
+    func get() -> (output: Data, error: Data) { state.withLock { $0 } }
+}
+
+/// Thread-safe container for stdin write error propagation.
+private struct StdinWriteState: Sendable {
+    private let state = OSAllocatedUnfairLock<Error?>(initialState: nil)
+
+    func setError(_ value: Error) { state.withLock { $0 = value } }
+    func get() -> Error? { state.withLock { $0 } }
 }
 
 final class SystemFileSystem: FileSysteming {
