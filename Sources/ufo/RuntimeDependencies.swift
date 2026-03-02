@@ -1,6 +1,5 @@
 import Foundation
 import Darwin
-import os
 import UFOLib
 
 struct SystemClock: Clock {
@@ -78,40 +77,26 @@ final class SystemProcessRunner: ProcessRunning {
             let pipe = Pipe()
             process.standardInput = pipe
             inputPipe = pipe
-            Self.debugLog("stdin: using Pipe (has payload)")
         } else {
             // Use a Foundation Pipe with its write end closed immediately
             // so the child reads EOF on first read (equivalent to /dev/null).
-            // A plain FileHandle for /dev/null causes Foundation's Process
-            // to mishandle stdout/stderr pipe setup on some macOS CI runners,
-            // producing empty stdout capture.
             let nullPipe = Pipe()
             nullPipe.fileHandleForWriting.closeFile()
             process.standardInput = nullPipe
             inputPipe = nil
-            Self.debugLog("stdin: using Pipe with closed write end (null stdin)")
         }
 
-        // Build our own pipe pairs with POSIX pipe(2) so we own every fd
-        // and nothing in Foundation can close or invalidate them behind
-        // our back.  Each pair: [0] = read end, [1] = write end.
+        // Build POSIX pipe pairs for stdout/stderr so we fully control
+        // every fd and nothing in Foundation can invalidate them.
         var stdoutFDs: [Int32] = [0, 0]
         var stderrFDs: [Int32] = [0, 0]
         guard pipe(&stdoutFDs) == 0, pipe(&stderrFDs) == 0 else {
             throw UFOError.subprocess("Failed to create output pipes for subprocess.")
         }
-        Self.debugLog("pipes: stdout=[\(stdoutFDs[0]),\(stdoutFDs[1])] stderr=[\(stderrFDs[0]),\(stderrFDs[1])]")
 
-        // Give Process a *duplicate* of each write end.  Foundation's
+        // Give Process a duplicate of each write end.  Foundation's
         // Process.run() may close the fd it receives during posix_spawn
-        // setup.  By handing over a dup we guarantee our original write-end
-        // fds stay valid so the parent can close them deterministically
-        // after launch.
-        //
-        // closeOnDealloc: false — we close dup'd fds ourselves right after
-        // launch so that NO write-end copies remain in the parent.  This
-        // lets readers see EOF as soon as the child exits instead of
-        // blocking until the Process object is deallocated.
+        // setup.  A dup keeps our originals valid for deterministic close.
         let stdoutWriteDup = dup(stdoutFDs[1])
         let stderrWriteDup = dup(stderrFDs[1])
         guard stdoutWriteDup >= 0, stderrWriteDup >= 0 else {
@@ -123,7 +108,6 @@ final class SystemProcessRunner: ProcessRunning {
         }
         process.standardOutput = FileHandle(fileDescriptor: stdoutWriteDup, closeOnDealloc: false)
         process.standardError = FileHandle(fileDescriptor: stderrWriteDup, closeOnDealloc: false)
-        Self.debugLog("dups: stdoutWriteDup=\(stdoutWriteDup) stderrWriteDup=\(stderrWriteDup)")
 
         do {
             try process.run()
@@ -134,42 +118,18 @@ final class SystemProcessRunner: ProcessRunning {
             throw UFOError.subprocess("Failed to launch subprocess at \(executable): \(error.localizedDescription)")
         }
 
-        // Close ALL write-end copies in the parent process.  The child
-        // inherited its own copies via posix_spawn.  With no remaining
-        // writers in the parent, readers will see EOF as soon as the child
-        // exits — no reliance on timeouts or force-close fallbacks.
-        // If Process.run() already closed the dup'd fds internally,
-        // close() returns EBADF harmlessly.
-        Self.debugLog("launched pid=\(process.processIdentifier), closing write ends")
+        // Close ALL write-end copies in the parent.  The child inherited
+        // its own copies via posix_spawn.  With no writers remaining in
+        // the parent, read(2) will see EOF once the child exits.
         Darwin.close(stdoutFDs[1])
         Darwin.close(stderrFDs[1])
         Darwin.close(stdoutWriteDup)
         Darwin.close(stderrWriteDup)
-        Self.debugLog("write ends closed, starting readers on fd \(stdoutFDs[0]) and \(stderrFDs[0])")
 
-        // Read child output using POSIX read(2) on fds we fully control.
-        // Readers run concurrently so neither pipe's kernel buffer can
-        // fill up and deadlock the child.
         let outputReadFD = stdoutFDs[0]
         let errorReadFD = stderrFDs[0]
-        let pipeCapture = PipeCaptureState()
-        let readerGroup = DispatchGroup()
-        let readerQueue = DispatchQueue(label: "ufo.system-process-runner.pipe-reader", attributes: .concurrent)
 
-        readerGroup.enter()
-        readerQueue.async {
-            pipeCapture.setOutput(Self.readAll(from: outputReadFD))
-            Darwin.close(outputReadFD)
-            readerGroup.leave()
-        }
-
-        readerGroup.enter()
-        readerQueue.async {
-            pipeCapture.setError(Self.readAll(from: errorReadFD))
-            Darwin.close(errorReadFD)
-            readerGroup.leave()
-        }
-
+        // Write stdin payload if provided.
         if let payload = standardInput, let inputPipe {
             do {
                 try writeStandardInput(
@@ -181,30 +141,36 @@ final class SystemProcessRunner: ProcessRunning {
                 )
             } catch let error as UFOError {
                 terminateAndReap(process, completion: completion)
-                awaitPipeReaders(readerGroup, outputFD: outputReadFD, errorFD: errorReadFD)
+                Darwin.close(outputReadFD)
+                Darwin.close(errorReadFD)
                 throw error
             }
         }
 
+        // Wait for the child to exit within the remaining budget.
         let waitResult = completion.wait(timeout: deadline)
-        Self.debugLog("completion.wait result=\(waitResult == .success ? "success" : "timedOut")")
         guard waitResult == .success else {
             terminateAndReap(process, completion: completion)
-            awaitPipeReaders(readerGroup, outputFD: outputReadFD, errorFD: errorReadFD)
+            Darwin.close(outputReadFD)
+            Darwin.close(errorReadFD)
             throw UFOError.subprocess(
                 "Subprocess timed out after \(formatTimeout(timeout)) seconds at \(executable)."
             )
         }
 
-        awaitPipeReaders(readerGroup, outputFD: outputReadFD, errorFD: errorReadFD)
-
-        let captured = pipeCapture.get()
-        Self.debugLog("result: exit=\(process.terminationStatus) stdout=\(captured.output.count)b stderr=\(captured.error.count)b stdout_utf8='\(String(decoding: captured.output, as: UTF8.self))'")
+        // Child has exited — all output is now buffered in pipe kernel
+        // buffers.  Read synchronously on the calling thread.  This
+        // avoids GCD dispatch entirely, eliminating thread-pool starvation
+        // that caused empty reads on resource-constrained CI runners.
+        let stdoutData = Self.readAll(from: outputReadFD)
+        Darwin.close(outputReadFD)
+        let stderrData = Self.readAll(from: errorReadFD)
+        Darwin.close(errorReadFD)
 
         return ProcessResult(
             exitCode: process.terminationStatus,
-            standardOutput: captured.output,
-            standardError: captured.error
+            standardOutput: stdoutData,
+            standardError: stderrData
         )
     }
 
@@ -229,33 +195,8 @@ final class SystemProcessRunner: ProcessRunning {
         _ = completion.wait(timeout: .now() + 1)
     }
 
-    private func awaitPipeReaders(_ group: DispatchGroup, outputFD: Int32, errorFD: Int32) {
-        let waitResult = group.wait(timeout: .now() + 1)
-        guard waitResult == .timedOut else {
-            Self.debugLog("awaitPipeReaders: readers completed normally")
-            return
-        }
-
-        Self.debugLog("awaitPipeReaders: TIMEOUT — force-closing fd \(outputFD) and \(errorFD)")
-        // Force-close the file descriptors to unblock any stuck read(2)
-        // calls.  Uses POSIX close() to avoid ObjC exceptions from
-        // FileHandle.closeFile() on broken pipes.
-        Darwin.close(outputFD)
-        Darwin.close(errorFD)
-        let finalWait = group.wait(timeout: .now() + 1)
-        Self.debugLog("awaitPipeReaders: after force-close wait=\(finalWait == .success ? "success" : "timedOut")")
-    }
-
-    // TEMPORARY: CI debug logging — remove after pipeline is green.
-    private static func debugLog(_ message: String) {
-        var msg = "DEBUG[ProcessRunner]: \(message)\n"
-        msg.withUTF8 { buf in
-            _ = Darwin.write(STDERR_FILENO, buf.baseAddress!, buf.count)
-        }
-    }
-
     /// Read all available bytes from a file descriptor using POSIX read(2).
-    /// Returns accumulated data after EOF (read returns 0) or an unrecoverable error.
+    /// Returns accumulated data after EOF (read returns 0) or an error.
     /// This avoids Foundation's FileHandle.readToEnd() which can throw ObjC
     /// NSFileHandleOperationException on some CI environments.
     private static func readAll(from fd: Int32) -> Data {
@@ -270,8 +211,6 @@ final class SystemProcessRunner: ProcessRunning {
                 result.append(buffer, count: bytesRead)
             } else {
                 // 0 = EOF, -1 = error (treat both as end of stream)
-                let errCode = (bytesRead < 0) ? errno : 0
-                debugLog("readAll(fd=\(fd)): exit loop bytesRead=\(bytesRead) errno=\(errCode) totalBytes=\(result.count)")
                 break
             }
         }
@@ -352,18 +291,6 @@ final class SystemProcessRunner: ProcessRunning {
             )
         }
     }
-}
-
-// MARK: - Sendable state containers for cross-queue data transfer
-
-/// Thread-safe container for pipe capture results.
-/// `OSAllocatedUnfairLock` is Sendable and compiler-verified safe on macOS 14+.
-private struct PipeCaptureState: Sendable {
-    private let state = OSAllocatedUnfairLock(initialState: (output: Data(), error: Data()))
-
-    func setOutput(_ data: Data) { state.withLock { $0.output = data } }
-    func setError(_ data: Data) { state.withLock { $0.error = data } }
-    func get() -> (output: Data, error: Data) { state.withLock { $0 } }
 }
 
 
