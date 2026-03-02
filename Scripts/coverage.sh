@@ -1,25 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SWIFT_TEST_HELP="$(swift test --help)"
-SWIFT_TEST_ARGS=(--enable-code-coverage)
-SWIFTC_HELP="$(swiftc -help)"
-
-if [[ "$SWIFTC_HELP" == *"-suppress-remarks"* ]]; then
-    SWIFT_TEST_ARGS=(-Xswiftc -suppress-remarks "${SWIFT_TEST_ARGS[@]}")
-fi
-
-if [[ "$SWIFT_TEST_HELP" == *"--enable-swift-testing"* ]]; then
-    SWIFT_TEST_ARGS=(--enable-swift-testing "${SWIFT_TEST_ARGS[@]}")
-elif [[ "$SWIFT_TEST_HELP" == *"--enable-experimental-swift-testing"* ]]; then
-    SWIFT_TEST_ARGS=(--enable-experimental-swift-testing "${SWIFT_TEST_ARGS[@]}")
-fi
-
 export LLVM_PROFILE_FILE="${LLVM_PROFILE_FILE:-${TMPDIR:-/tmp}/ufo-%p-%m.profraw}"
 
-swift test "${SWIFT_TEST_ARGS[@]}" \
-    > >(python3 Scripts/filter-swift-noise.py) \
-    2> >(python3 Scripts/filter-swift-noise.py >&2)
+bash Scripts/run-swift-tests.sh --enable-code-coverage
 
 CODECOV_JSON_PATH="$(python3 - <<'PY'
 from pathlib import Path
