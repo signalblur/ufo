@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-swift test --enable-code-coverage
+swift test --enable-swift-testing --enable-code-coverage
 
-CODECOV_JSON_PATH="$(swift test --show-codecov-path)"
+CODECOV_JSON_PATH="$(swift test --enable-swift-testing --enable-code-coverage --show-codecov-path)"
 
 python3 - "$CODECOV_JSON_PATH" <<'PY'
 import json
