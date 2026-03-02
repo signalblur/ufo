@@ -97,19 +97,14 @@ final class SystemProcessRunner: ProcessRunning {
             nullInputHandle?.closeFile()
         }
 
-        do {
-            try process.run()
-        } catch {
-            throw UFOError.subprocess("Failed to launch subprocess at \(executable): \(error.localizedDescription)")
-        }
-
-        outputPipe.fileHandleForWriting.closeFile()
-        errorPipe.fileHandleForWriting.closeFile()
-
         let pipeCapture = PipeCaptureState()
         let readerGroup = DispatchGroup()
         let readerQueue = DispatchQueue(label: "ufo.system-process-runner.pipe-reader", attributes: .concurrent)
 
+        // Start pipe readers before launching the process to avoid a race
+        // where fast-exiting children close their pipe ends before readers
+        // are dispatched.  readToEnd() blocks until the writing ends are
+        // closed (which we do right after process.run()).
         readerGroup.enter()
         readerQueue.async {
             let data = (try? outputPipe.fileHandleForReading.readToEnd()) ?? Data()
@@ -123,6 +118,21 @@ final class SystemProcessRunner: ProcessRunning {
             pipeCapture.setError(data)
             readerGroup.leave()
         }
+
+        do {
+            try process.run()
+        } catch {
+            // Unblock readers so they don't hang forever.
+            outputPipe.fileHandleForWriting.closeFile()
+            errorPipe.fileHandleForWriting.closeFile()
+            awaitPipeReaders(readerGroup, outputPipe: outputPipe, errorPipe: errorPipe)
+            throw UFOError.subprocess("Failed to launch subprocess at \(executable): \(error.localizedDescription)")
+        }
+
+        // Close the parent's writing ends so readToEnd() can return EOF
+        // once the child closes its side.
+        outputPipe.fileHandleForWriting.closeFile()
+        errorPipe.fileHandleForWriting.closeFile()
 
         if let payload = standardInput, let inputPipe {
             do {
@@ -199,39 +209,71 @@ final class SystemProcessRunner: ProcessRunning {
         deadline: DispatchTime,
         timeout: TimeInterval
     ) throws {
-        let completion = DispatchSemaphore(value: 0)
-        let writeState = StdinWriteState()
+        let descriptor = handle.fileDescriptor
 
-        DispatchQueue.global(qos: .userInitiated).async {
-            let descriptor = handle.fileDescriptor
-            if fcntl(descriptor, F_SETNOSIGPIPE, 1) == -1 {
-                let errorCode = errno
-                let message = String(cString: strerror(errorCode))
-                writeState.setError(
-                    UFOError.subprocess("Failed to configure subprocess stdin writer: \(message)")
+        // Suppress SIGPIPE so broken-pipe writes return EPIPE instead of
+        // killing the process.
+        if fcntl(descriptor, F_SETNOSIGPIPE, 1) == -1 {
+            let errorCode = errno
+            let message = String(cString: strerror(errorCode))
+            throw UFOError.subprocess("Failed to configure subprocess stdin writer: \(message)")
+        }
+
+        // Set the file descriptor to non-blocking so write(2) returns
+        // immediately when the pipe buffer is full, allowing us to check
+        // the deadline between attempts.
+        let originalFlags = fcntl(descriptor, F_GETFL)
+        if originalFlags == -1 || fcntl(descriptor, F_SETFL, originalFlags | O_NONBLOCK) == -1 {
+            let errorCode = errno
+            let message = String(cString: strerror(errorCode))
+            throw UFOError.subprocess("Failed to configure subprocess stdin writer: \(message)")
+        }
+
+        var offset = 0
+        let chunkSize = 65_536
+        let pollInterval: useconds_t = 5_000 // 5 ms
+
+        while offset < payload.count {
+            guard DispatchTime.now() < deadline else {
+                throw UFOError.subprocess(
+                    "Subprocess stdin write timed out after \(formatTimeout(timeout)) seconds at \(executable)."
                 )
-                completion.signal()
-                return
             }
 
-            do {
-                try handle.write(contentsOf: payload)
-                try handle.close()
-            } catch {
-                writeState.setError(error)
+            let end = min(offset + chunkSize, payload.count)
+            let written = payload[offset..<end].withUnsafeBytes { buffer -> Int in
+                Darwin.write(descriptor, buffer.baseAddress!, buffer.count)
             }
-            completion.signal()
+
+            if written > 0 {
+                offset += written
+            } else if written == 0 {
+                break
+            } else {
+                let errorCode = errno
+                if errorCode == EAGAIN || errorCode == EWOULDBLOCK {
+                    // Pipe buffer full — poll briefly then retry.
+                    usleep(pollInterval)
+                    continue
+                }
+                if errorCode == EPIPE {
+                    throw UFOError.subprocess(
+                        "Failed writing subprocess stdin at \(executable): Broken pipe"
+                    )
+                }
+                let message = String(cString: strerror(errorCode))
+                throw UFOError.subprocess(
+                    "Failed writing subprocess stdin at \(executable): \(message)"
+                )
+            }
         }
 
-        let waitResult = completion.wait(timeout: deadline)
-        guard waitResult == .success else {
+        do {
+            try handle.close()
+        } catch {
             throw UFOError.subprocess(
-                "Subprocess stdin write timed out after \(formatTimeout(timeout)) seconds at \(executable)."
+                "Failed writing subprocess stdin at \(executable): \(error.localizedDescription)"
             )
-        }
-
-        if let error = writeState.get() {
-            throw UFOError.subprocess("Failed writing subprocess stdin at \(executable): \(error.localizedDescription)")
         }
     }
 }
@@ -248,13 +290,7 @@ private struct PipeCaptureState: Sendable {
     func get() -> (output: Data, error: Data) { state.withLock { $0 } }
 }
 
-/// Thread-safe container for stdin write error propagation.
-private struct StdinWriteState: Sendable {
-    private let state = OSAllocatedUnfairLock<Error?>(initialState: nil)
 
-    func setError(_ value: Error) { state.withLock { $0 = value } }
-    func get() -> Error? { state.withLock { $0 } }
-}
 
 final class SystemFileSystem: FileSysteming {
     private let fileManager: FileManager

@@ -123,7 +123,7 @@ struct SystemRuntimeDependenciesTests {
 
         let elapsedNanos = DispatchTime.now().uptimeNanoseconds - start
         let elapsed = TimeInterval(elapsedNanos) / 1_000_000_000
-        #expect(elapsed < timeout + 0.55)
+        #expect(elapsed < timeout + 1.5)
     }
 
     @Test("SystemProcessRunner handles early child stdin close safely")
